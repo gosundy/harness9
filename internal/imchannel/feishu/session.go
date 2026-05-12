@@ -29,7 +29,9 @@ const maxThinkingRunes = 400
 //	✅ bash（123ms）
 //	（最终回复文本）
 //
-// Session 实例由单个 goroutine 驱动（Server.handleMessage），无并发写入。
+// 并发安全：Session 本身无可变状态（仅持有 client 和 chatID），sendText 的每次调用
+// 均为独立的 HTTP 请求，多 goroutine 同时调用不同方法（如 NotifyToolStart / NotifyToolDone）
+// 是安全的。消息顺序由飞书服务端的接收顺序决定，不保证与发送顺序完全一致。
 type Session struct {
 	client *lark.Client
 	chatID string
@@ -64,10 +66,8 @@ func (s *Session) NotifyToolDone(ctx context.Context, tc schema.ToolCall, result
 }
 
 // SendReply 发送 Agent 最终回复。
+// 调用方（Server）保证 text 不为空；兜底逻辑在编排层（server.go）处理。
 func (s *Session) SendReply(ctx context.Context, text string) error {
-	if text == "" {
-		text = "✅ 任务完成"
-	}
 	return s.sendText(ctx, text)
 }
 

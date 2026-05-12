@@ -54,8 +54,12 @@ func main() {
 		log.Fatal("[main] 缺少飞书配置：FEISHU_APP_ID 或 FEISHU_APP_SECRET 未设置")
 	}
 
-	// 指定 LLM Provider
-	llm, err := provider.NewOpenAIProvider("openai/gpt-5.4-mini")
+	// 指定 LLM Provider，模型名称通过 LLM_MODEL 环境变量配置，未设置时使用默认值。
+	modelName := os.Getenv("LLM_MODEL")
+	if modelName == "" {
+		modelName = "openai/gpt-4o-mini"
+	}
+	llm, err := provider.NewOpenAIProvider(modelName)
 	if err != nil {
 		log.Fatalf("[main] 创建 Provider 失败: %v", err)
 	}

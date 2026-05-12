@@ -72,5 +72,6 @@ type Session interface {
 	NotifyToolDone(ctx context.Context, tc schema.ToolCall, result schema.ToolResult, d time.Duration) error
 
 	// SendReply 发送 Agent 的最终回复（成功或错误均通过此方法）。
+	// 调用方保证 text 非空；若 agent 静默完成，编排层（Server）负责提供兜底文本。
 	SendReply(ctx context.Context, text string) error
 }

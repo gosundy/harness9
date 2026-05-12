@@ -43,7 +43,9 @@ func (c *Channel) SetMessageHandler(handler imchannel.MessageHandler) {
 }
 
 // NewSession 为一条入站消息创建对应的飞书 Session。
-func (c *Channel) NewSession(chatID, messageID string) imchannel.Session {
+// messageID 当前未持久化到 Session，因为飞书进度消息采用"独立消息"模式而非回复线程，
+// 所有消息直接发往 chatID。若未来切换为回复线程模式，则需在 Session 中记录 messageID。
+func (c *Channel) NewSession(chatID, _ string) imchannel.Session {
 	return &Session{
 		client: c.client,
 		chatID: chatID,

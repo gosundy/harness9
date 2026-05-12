@@ -56,7 +56,10 @@ func (s *Server) handleMessage(ctx context.Context, msg imchannel.IncomingMessag
 
 	stream, err := s.eng.RunStream(ctx, msg.Text)
 	if err != nil {
-		_ = session.SendReply(ctx, fmt.Sprintf("❌ 启动失败：%v", err))
+		log.Printf("[server] RunStream 启动失败: %v", err)
+		if replyErr := session.SendReply(ctx, fmt.Sprintf("❌ 启动失败：%v", err)); replyErr != nil {
+			log.Printf("[server] SendReply(启动失败) 失败: %v", replyErr)
+		}
 		return
 	}
 
@@ -124,7 +127,12 @@ func (s *Server) handleMessage(ctx context.Context, msg imchannel.IncomingMessag
 		case engine.EventToolResult:
 			if result, ok := evt.Data.(schema.ToolResult); ok {
 				tc := toolCalls[result.ToolCallID]
-				d := time.Since(toolStartTimes[result.ToolCallID])
+				// 若 toolStartTimes 中没有对应记录（异常情况），使用 0 作为耗时，
+				// 避免 time.Since(zero) 返回从 epoch 至今的异常大值。
+				var d time.Duration
+				if startTime, found := toolStartTimes[result.ToolCallID]; found {
+					d = time.Since(startTime)
+				}
 				if err := session.NotifyToolDone(ctx, tc, result, d); err != nil {
 					log.Printf("[server] NotifyToolDone 失败 (tool=%s): %v", tc.Name, err)
 				}
@@ -141,7 +149,12 @@ func (s *Server) handleMessage(ctx context.Context, msg imchannel.IncomingMessag
 			} else {
 				// Action 为空：thinking 本身就是最终回复（Two-Stage ReAct 的退化情况），
 				// 直接发送不再额外推送 UpdateThinkingContent，避免同一内容出现两次。
-				if err := session.SendReply(ctx, lastThinking.String()); err != nil {
+				// 若 thinking 也为空（单阶段模式下模型静默完成），使用兜底文本。
+				thinkingText := lastThinking.String()
+				if thinkingText == "" {
+					thinkingText = "✅ 任务完成"
+				}
+				if err := session.SendReply(ctx, thinkingText); err != nil {
 					log.Printf("[server] SendReply 失败: %v", err)
 				}
 			}
