@@ -165,20 +165,8 @@ func (e *AgentEngine) RunStream(ctx context.Context, userPrompt string) (<-chan 
 	return ch, nil
 }
 
-// streamGenerate 是 RunStream 用于驱动 Provider.GenerateStream 的桥接器。
-// 它将底层 StreamChunk 逐个读取并转换为面向客户端的语义 Event，最终返回
-// 累积完成的完整 Message 供 runLoop 注入到对话上下文。
-//
-// 工作流程：
-//  1. 调用 provider.GenerateStream 获取 <-chan StreamChunk
-//  2. 根据 phase 决定文本 delta 应发送的事件类型（thinking_delta / action_delta）
-//  3. 逐 chunk 读取：
-//     - text_delta → 转发为相应的 EventXxxDelta
-//     - tool_call_start / tool_call_delta → 忽略（工具事件在 executeTools 中发送）
-//     - done → 提取完整 Message
-//     - error → 返回 error，由 runLoop 翻译成 EventError
-//
-// 返回 error 时，runLoop 会包装该 error 并最终通过 EventError 报告给消费者。
+// streamGenerate 驱动 Provider.GenerateStream，将 text_delta 转发为对应阶段的 Event，
+// 最终返回 StreamChunkDone 中的完整 Message 供 runLoop 注入对话上下文。
 func (e *AgentEngine) streamGenerate(ctx context.Context, ch chan<- Event, ph phase, turn int, history []schema.Message, tools []schema.ToolDefinition) (*schema.Message, error) {
 	stream, err := e.provider.GenerateStream(ctx, history, tools)
 	if err != nil {
@@ -199,9 +187,6 @@ func (e *AgentEngine) streamGenerate(ctx context.Context, ch chan<- Event, ph ph
 				// context 已取消，返回错误让 runLoop 走错误路径退出
 				return nil, ctx.Err()
 			}
-		case schema.StreamChunkToolCallStart, schema.StreamChunkToolCallDelta:
-			// 工具调用请求已到达 Provider 流，但实际执行在 executeTools 中进行。
-			// EventToolStart / EventToolResult 在那里统一发送，避免重复语义。
 		case schema.StreamChunkDone:
 			msg = chunk.Message
 		case schema.StreamChunkError:

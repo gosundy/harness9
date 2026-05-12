@@ -12,7 +12,6 @@ package tools
 import (
 	"context"
 	"fmt"
-	"log"
 
 	"github.com/harness9/internal/schema"
 )
@@ -58,7 +57,6 @@ func (r *registryImpl) Register(tool BaseTool) error {
 		return fmt.Errorf("tool %q already registered", name)
 	}
 	r.tools[name] = tool
-	log.Printf("[Registry] 成功挂载工具: %s", name)
 	return nil
 }
 

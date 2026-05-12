@@ -133,8 +133,8 @@ harness9/
 ├── cmd/
 │   └── harness9/
 │       ├── main.go                  # 程序入口，组装各模块并启动飞书 Bot Server
-│       ├── server.go                # Server 编排层（IMChannel × AgentEngine，事件流映射）
-│       └── server_test.go           # Server 事件映射单元测试
+│       ├── bot.go                   # Bot 编排层（IMChannel × AgentEngine，事件流映射）
+│       └── bot_test.go              # Bot 事件映射单元测试
 ├── internal/
 │   ├── engine/                      # Agent 核心引擎 — Two-Stage ReAct 主循环
 │   │   ├── agent_loop.go            # 共享 runLoop 主循环内核 + 阻塞式 Run + 日志格式化辅助
@@ -191,7 +191,7 @@ harness9/
 ┌─────────────────────────────────────────────────┐
 │                    cmd/harness9                   │
 │   main.go — 飞书 Bot 入口（组装所有模块并启动）      │
-│   server.go — Server 编排层（事件流 → IM 进度推送） │
+│   bot.go — Bot 编排层（事件流 → IM 进度推送） │
 └──────────┬──────────────────────┬───────────────┘
            │                      │
 ┌──────────▼──────────┐  ┌────────▼────────────────┐
@@ -219,7 +219,7 @@ harness9/
 
 | 模块 | 职责 | 状态 |
 |------|------|:----:|
-| **cmd/harness9** | 飞书 Bot 入口：组装 Provider、Registry、Engine、IMChannel，启动 Server | ✅ |
+| **cmd/harness9** | 飞书 Bot 入口：组装 Provider、Registry、Engine、IMChannel，启动 Bot | ✅ |
 | **engine** | Two-Stage ReAct 主循环，阻塞 + 流式双模式，并发工具调度 | ✅ |
 | **imchannel** | IM 平台统一适配接口（IMChannel / Session 契约定义） | ✅ |
 | **imchannel/feishu** | 飞书平台实现：WebSocket 长连接接收消息，独立文本消息推送进度 | ✅ |

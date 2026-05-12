@@ -76,20 +76,8 @@ func (p *OpenAIProvider) Generate(ctx context.Context, msgs []schema.Message, av
 }
 
 // GenerateStream 实现 LLMProvider 接口的流式调用。
-// 使用 OpenAI SDK 的 NewStreaming API，将 ChatCompletionChunk 逐个读取并转换为
-// 统一的 StreamChunk 通过 channel 输出。
-//
-// 流式处理流程：
-//  1. 调用 convertMessages / convertTools 构建 SDK 请求参数
-//  2. 通过 client.Chat.Completions.NewStreaming() 创建流式连接
-//  3. 在独立 goroutine 中迭代 stream.Next()，处理每个 chunk：
-//     - delta.Content → StreamChunkTextDelta（逐 token 文本）
-//     - delta.ToolCalls[].ID != "" → StreamChunkToolCallStart（新工具调用）
-//     - delta.ToolCalls[].Function.Arguments → StreamChunkToolCallDelta（参数增量）
-//  4. 使用 openaiToolCallAccumulator 按 Index 累积工具调用的完整参数
-//  5. 流结束后发送 StreamChunkDone（含累积完成的完整 Message）
-//
-// 所有 channel 发送都通过 sendStreamChunk 进行，支持 context 取消感知。
+// 在独立 goroutine 中迭代 SDK 流，文本增量发送 StreamChunkTextDelta，
+// 工具调用通过 accumulator 累积后随 StreamChunkDone 一并输出。
 func (p *OpenAIProvider) GenerateStream(ctx context.Context, msgs []schema.Message, availableTools []schema.ToolDefinition) (<-chan schema.StreamChunk, error) {
 	openaiMsgs := p.convertMessages(msgs)
 	openaiTools, err := p.convertTools(availableTools)
@@ -136,28 +124,9 @@ func (p *OpenAIProvider) GenerateStream(ctx context.Context, msgs []schema.Messa
 				idx := int(tc.Index)
 				if tc.ID != "" {
 					toolAccs.start(idx, tc.ID, tc.Function.Name)
-					if !sendStreamChunk(ctx, ch, schema.StreamChunk{
-						Type: schema.StreamChunkToolCallStart,
-						ToolCall: &schema.ToolCallDelta{
-							Index: idx,
-							ID:    tc.ID,
-							Name:  tc.Function.Name,
-						},
-					}) {
-						return
-					}
 				}
 				if tc.Function.Arguments != "" {
 					toolAccs.appendArgs(idx, tc.Function.Arguments)
-					if !sendStreamChunk(ctx, ch, schema.StreamChunk{
-						Type: schema.StreamChunkToolCallDelta,
-						ToolCall: &schema.ToolCallDelta{
-							Index:     idx,
-							Arguments: json.RawMessage(tc.Function.Arguments),
-						},
-					}) {
-						return
-					}
 				}
 			}
 		}

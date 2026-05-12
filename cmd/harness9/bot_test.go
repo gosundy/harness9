@@ -127,31 +127,6 @@ func (p *seqProvider) GenerateStream(ctx context.Context, msgs []schema.Message,
 			case ch <- schema.StreamChunk{Type: schema.StreamChunkTextDelta, Delta: msg.Content}:
 			}
 		}
-		for i, tc := range msg.ToolCalls {
-			select {
-			case <-ctx.Done():
-				return
-			case ch <- schema.StreamChunk{
-				Type: schema.StreamChunkToolCallStart,
-				ToolCall: &schema.ToolCallDelta{
-					Index: i,
-					ID:    tc.ID,
-					Name:  tc.Name,
-				},
-			}:
-			}
-			select {
-			case <-ctx.Done():
-				return
-			case ch <- schema.StreamChunk{
-				Type: schema.StreamChunkToolCallDelta,
-				ToolCall: &schema.ToolCallDelta{
-					Index:     i,
-					Arguments: tc.Arguments,
-				},
-			}:
-			}
-		}
 		select {
 		case <-ctx.Done():
 		case ch <- schema.StreamChunk{Type: schema.StreamChunkDone, Message: msg}:

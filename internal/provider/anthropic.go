@@ -93,16 +93,8 @@ func (p *AnthropicProvider) Generate(ctx context.Context, msgs []schema.Message,
 }
 
 // GenerateStream 实现 LLMProvider 接口的流式调用。
-// 使用 Anthropic SDK 的 NewStreaming API，将 MessageStreamEventUnion 逐个读取并转换为
-// 统一的 StreamChunk 通过 channel 输出。
-//
-// Anthropic 流式事件类型映射：
-//   - content_block_start (type=tool_use) → StreamChunkToolCallStart（含 ID、Name）
-//   - content_block_delta (type=text_delta) → StreamChunkTextDelta（文本增量）
-//   - content_block_delta (type=input_json_delta) → StreamChunkToolCallDelta（参数增量）
-//
-// 工具调用参数使用 anthropicToolCallAccumulator 按 Index 累积，
-// Anthropic SDK 通过 input_json_delta 的 PartialJSON 字段逐片段传输参数。
+// 在独立 goroutine 中迭代 SDK 流，文本增量发送 StreamChunkTextDelta，
+// 工具调用通过 accumulator 累积后随 StreamChunkDone 一并输出。
 func (p *AnthropicProvider) GenerateStream(ctx context.Context, msgs []schema.Message, availableTools []schema.ToolDefinition) (<-chan schema.StreamChunk, error) {
 	anthropicMsgs, systemPrompt, err := p.convertMessages(msgs)
 	if err != nil {
@@ -145,18 +137,7 @@ func (p *AnthropicProvider) GenerateStream(ctx context.Context, msgs []schema.Me
 			case "content_block_start":
 				cb := event.AsContentBlockStart()
 				if cb.ContentBlock.Type == "tool_use" {
-					idx := int(cb.Index)
-					toolAccs.start(idx, cb.ContentBlock.ID, cb.ContentBlock.Name)
-					if !sendStreamChunk(ctx, ch, schema.StreamChunk{
-						Type: schema.StreamChunkToolCallStart,
-						ToolCall: &schema.ToolCallDelta{
-							Index: idx,
-							ID:    cb.ContentBlock.ID,
-							Name:  cb.ContentBlock.Name,
-						},
-					}) {
-						return
-					}
+					toolAccs.start(int(cb.Index), cb.ContentBlock.ID, cb.ContentBlock.Name)
 				}
 
 			case "content_block_delta":
@@ -173,17 +154,7 @@ func (p *AnthropicProvider) GenerateStream(ctx context.Context, msgs []schema.Me
 					}
 				case "input_json_delta":
 					ijd := delta.Delta.AsInputJSONDelta()
-					idx := int(delta.Index)
-					toolAccs.appendArgs(idx, ijd.PartialJSON)
-					if !sendStreamChunk(ctx, ch, schema.StreamChunk{
-						Type: schema.StreamChunkToolCallDelta,
-						ToolCall: &schema.ToolCallDelta{
-							Index:     idx,
-							Arguments: json.RawMessage(ijd.PartialJSON),
-						},
-					}) {
-						return
-					}
+					toolAccs.appendArgs(int(delta.Index), ijd.PartialJSON)
 				}
 			}
 		}

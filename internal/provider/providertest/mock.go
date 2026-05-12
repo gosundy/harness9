@@ -40,12 +40,7 @@ func (m *mockProvider) Generate(_ context.Context, _ []schema.Message, tools []s
 }
 
 // GenerateStream 实现 LLMProvider 接口的流式调用。
-// 将 simulateResponse 的结果拆分为 StreamChunk 序列通过 channel 发送：
-//   - 文本内容 → StreamChunkTextDelta（一次性发送全部文本）
-//   - 工具调用 → StreamChunkToolCallStart + StreamChunkToolCallDelta
-//   - 结束     → StreamChunkDone（含完整 Message）
-//
-// 简化的流式模拟：不逐 token 发送，因为测试关心的是事件类型和顺序，而非粒度。
+// 文本内容以单次 StreamChunkTextDelta 发送，结束时发送含完整 Message 的 StreamChunkDone。
 func (m *mockProvider) GenerateStream(ctx context.Context, _ []schema.Message, tools []schema.ToolDefinition) (<-chan schema.StreamChunk, error) {
 	msg := m.simulateResponse(tools)
 
@@ -68,29 +63,6 @@ func (m *mockProvider) GenerateStream(ctx context.Context, _ []schema.Message, t
 				return
 			}
 		}
-
-		for i, tc := range msg.ToolCalls {
-			if !send(schema.StreamChunk{
-				Type: schema.StreamChunkToolCallStart,
-				ToolCall: &schema.ToolCallDelta{
-					Index: i,
-					ID:    tc.ID,
-					Name:  tc.Name,
-				},
-			}) {
-				return
-			}
-			if !send(schema.StreamChunk{
-				Type: schema.StreamChunkToolCallDelta,
-				ToolCall: &schema.ToolCallDelta{
-					Index:     i,
-					Arguments: tc.Arguments,
-				},
-			}) {
-				return
-			}
-		}
-
 		send(schema.StreamChunk{Type: schema.StreamChunkDone, Message: msg})
 	}()
 	return ch, nil
