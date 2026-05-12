@@ -69,11 +69,26 @@ func (s *Server) handleMessage(ctx context.Context, msg imchannel.IncomingMessag
 	// reply 累积 Action 阶段的文本（最终回复）。
 	// 每当本 Turn 出现工具调用时重置，确保只保留无工具调用的最后一个 Action 响应。
 	var reply strings.Builder
-	// lastThinking 保存最近一轮 Thinking 阶段的文本，当 Action 阶段无文本时作为兜底回复。
+	// lastThinking 保存最近一轮 Thinking 阶段的文本。
 	// Two-Stage ReAct 中，模型有时将完整回答放在 Thinking 阶段，Action 阶段返回空内容。
 	var lastThinking strings.Builder
 	// lastThinkingTurn 记录当前累积的是哪一轮的思考文本，Turn 变化时重置缓冲区。
 	var lastThinkingTurn int
+	// thinkingFlushed 标记当前 Turn 的思考内容是否已推送至进度消息。
+	// 每轮 Turn 开始时重置，避免同一 Turn 的思考内容重复推送。
+	var thinkingFlushed bool
+
+	// flushThinking 将当前 Turn 的思考内容推送到进度消息（每轮最多调用一次）。
+	// 在思考→工具调用（EventToolStart）和思考→完成（EventDone）两处触发。
+	flushThinking := func() {
+		if thinkingFlushed || lastThinking.Len() == 0 {
+			return
+		}
+		if err := session.UpdateThinkingContent(ctx, lastThinking.String()); err != nil {
+			log.Printf("[server] UpdateThinkingContent 失败: %v", err)
+		}
+		thinkingFlushed = true
+	}
 
 	for evt := range stream {
 		switch evt.Type {
@@ -82,6 +97,7 @@ func (s *Server) handleMessage(ctx context.Context, msg imchannel.IncomingMessag
 			if evt.Turn != lastThinkingTurn {
 				lastThinking.Reset()
 				lastThinkingTurn = evt.Turn
+				thinkingFlushed = false
 			}
 			if text, ok := evt.Data.(string); ok {
 				lastThinking.WriteString(text)
@@ -93,6 +109,8 @@ func (s *Server) handleMessage(ctx context.Context, msg imchannel.IncomingMessag
 			}
 
 		case engine.EventToolStart:
+			// Thinking 阶段已完成，先将思考内容推送到进度消息，再追加工具调用行。
+			flushThinking()
 			// 本 Turn 有工具调用，该轮 Action 文本不是最终回复，重置。
 			reply.Reset()
 			if tc, ok := evt.Data.(schema.ToolCall); ok {
@@ -113,6 +131,8 @@ func (s *Server) handleMessage(ctx context.Context, msg imchannel.IncomingMessag
 			}
 
 		case engine.EventDone:
+			// 对于无工具调用的轮次，确保思考内容也能展示在进度消息中。
+			flushThinking()
 			// Action 文本优先；若为空则用 Thinking 兜底（模型将回答放在思考阶段时）。
 			finalText := reply.String()
 			if finalText == "" {

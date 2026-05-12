@@ -59,6 +59,10 @@ type Session interface {
 	// 实现通常发送一条初始占位消息，并记录其 ID 供后续更新使用。
 	NotifyThinking(ctx context.Context) error
 
+	// UpdateThinkingContent 将 Phase 1（Thinking）的完整推理文本推送到进度消息中。
+	// 在 Thinking 阶段结束、进入工具调用或 EventDone 前调用，让用户看到模型的思考过程。
+	UpdateThinkingContent(ctx context.Context, text string) error
+
 	// NotifyToolStart 推送工具开始执行的进度。
 	// 在引擎分发 EventToolStart 事件时调用。
 	NotifyToolStart(ctx context.Context, tc schema.ToolCall) error
@@ -68,6 +72,5 @@ type Session interface {
 	NotifyToolDone(ctx context.Context, tc schema.ToolCall, result schema.ToolResult, d time.Duration) error
 
 	// SendReply 发送 Agent 的最终回复（成功或错误均通过此方法）。
-	// 实现通常在发送最终回复后删除占位进度消息。
 	SendReply(ctx context.Context, text string) error
 }
