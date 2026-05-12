@@ -121,7 +121,7 @@ func TestMockProvider_GenerateStream_ThinkingPhaseHasTextDelta(t *testing.T) {
 	}
 }
 
-func TestMockProvider_GenerateStream_Turn1HasToolCallChunks(t *testing.T) {
+func TestMockProvider_GenerateStream_Turn1HasToolCallsInDoneChunk(t *testing.T) {
 	p := NewMock()
 	tools := []schema.ToolDefinition{{Name: "bash"}}
 
@@ -130,13 +130,13 @@ func TestMockProvider_GenerateStream_Turn1HasToolCallChunks(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	var sawToolCallStart bool
+	var doneMsg *schema.Message
 	for chunk := range stream {
-		if chunk.Type == schema.StreamChunkToolCallStart {
-			sawToolCallStart = true
+		if chunk.Type == schema.StreamChunkDone {
+			doneMsg = chunk.Message
 		}
 	}
-	if !sawToolCallStart {
-		t.Error("first action turn stream should contain ToolCallStart chunk")
+	if doneMsg == nil || len(doneMsg.ToolCalls) == 0 {
+		t.Error("first action turn Done chunk should carry tool calls")
 	}
 }
