@@ -1,0 +1,108 @@
+package main
+
+import (
+	"context"
+	"fmt"
+	"log"
+	"strings"
+	"time"
+
+	"github.com/harness9/internal/engine"
+	"github.com/harness9/internal/imchannel"
+	"github.com/harness9/internal/schema"
+)
+
+// Server 是 IMChannel 与 AgentEngine 之间的编排层。
+//
+// 职责：
+//   - 监听 IMChannel 的入站消息
+//   - 为每条消息启动独立的 Agent 执行循环（goroutine）
+//   - 将 RunStream 事件流映射到 Session 进度推送方法
+//
+// 每条消息独立处理，无跨消息状态共享。
+type Server struct {
+	channel imchannel.IMChannel
+	eng     *engine.AgentEngine
+}
+
+// NewServer 创建 Server，将 IMChannel 与 AgentEngine 组合在一起。
+func NewServer(ch imchannel.IMChannel, eng *engine.AgentEngine) *Server {
+	return &Server{channel: ch, eng: eng}
+}
+
+// Start 注册消息处理器并启动 IMChannel 长连接（阻塞直到 ctx 取消）。
+func (s *Server) Start(ctx context.Context) error {
+	s.channel.SetMessageHandler(func(_ context.Context, msg imchannel.IncomingMessage) {
+		// 每条消息使用从 server ctx 派生的独立子 context，
+		// 超时设为 5 分钟，server 关闭时所有进行中的处理也会随之取消。
+		msgCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+		go func() {
+			defer cancel()
+			s.handleMessage(msgCtx, msg)
+		}()
+	})
+	return s.channel.Start(ctx)
+}
+
+// handleMessage 处理单条用户消息：启动 Agent 循环，将事件流翻译为 Session 进度推送。
+func (s *Server) handleMessage(ctx context.Context, msg imchannel.IncomingMessage) {
+	log.Printf("[server] 处理消息 | chatID=%s text=%.50s", msg.ChatID, msg.Text)
+
+	session := s.channel.NewSession(msg.ChatID, msg.MessageID)
+
+	if err := session.NotifyThinking(ctx); err != nil {
+		log.Printf("[server] NotifyThinking 失败: %v", err)
+	}
+
+	stream, err := s.eng.RunStream(ctx, msg.Text)
+	if err != nil {
+		_ = session.SendReply(ctx, fmt.Sprintf("❌ 启动失败：%v", err))
+		return
+	}
+
+	// toolCalls 和 toolStartTimes 记录每个工具调用的元信息，
+	// 用于在 EventToolResult 到达时还原工具名称和计算耗时。
+	// 这两个 map 仅在当前 goroutine 中访问，无需加锁。
+	toolCalls := make(map[string]schema.ToolCall)
+	toolStartTimes := make(map[string]time.Time)
+	var reply strings.Builder
+
+	for evt := range stream {
+		switch evt.Type {
+		case engine.EventActionDelta:
+			if text, ok := evt.Data.(string); ok {
+				reply.WriteString(text)
+			}
+
+		case engine.EventToolStart:
+			if tc, ok := evt.Data.(schema.ToolCall); ok {
+				toolCalls[tc.ID] = tc
+				toolStartTimes[tc.ID] = time.Now()
+				if err := session.NotifyToolStart(ctx, tc); err != nil {
+					log.Printf("[server] NotifyToolStart 失败 (tool=%s): %v", tc.Name, err)
+				}
+			}
+
+		case engine.EventToolResult:
+			if result, ok := evt.Data.(schema.ToolResult); ok {
+				tc := toolCalls[result.ToolCallID]
+				d := time.Since(toolStartTimes[result.ToolCallID])
+				if err := session.NotifyToolDone(ctx, tc, result, d); err != nil {
+					log.Printf("[server] NotifyToolDone 失败 (tool=%s): %v", tc.Name, err)
+				}
+			}
+
+		case engine.EventDone:
+			if err := session.SendReply(ctx, reply.String()); err != nil {
+				log.Printf("[server] SendReply 失败: %v", err)
+			}
+
+		case engine.EventError:
+			errMsg := fmt.Sprintf("%v", evt.Data)
+			log.Printf("[server] Agent 执行错误: %s", errMsg)
+			if err := session.SendReply(ctx, "❌ "+errMsg); err != nil {
+				log.Printf("[server] SendReply(error) 失败: %v", err)
+			}
+		}
+	}
+}
