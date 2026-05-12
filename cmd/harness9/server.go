@@ -65,16 +65,36 @@ func (s *Server) handleMessage(ctx context.Context, msg imchannel.IncomingMessag
 	// 这两个 map 仅在当前 goroutine 中访问，无需加锁。
 	toolCalls := make(map[string]schema.ToolCall)
 	toolStartTimes := make(map[string]time.Time)
+
+	// reply 累积 Action 阶段的文本（最终回复）。
+	// 每当本 Turn 出现工具调用时重置，确保只保留无工具调用的最后一个 Action 响应。
 	var reply strings.Builder
+	// lastThinking 保存最近一轮 Thinking 阶段的文本，当 Action 阶段无文本时作为兜底回复。
+	// Two-Stage ReAct 中，模型有时将完整回答放在 Thinking 阶段，Action 阶段返回空内容。
+	var lastThinking strings.Builder
+	// lastThinkingTurn 记录当前累积的是哪一轮的思考文本，Turn 变化时重置缓冲区。
+	var lastThinkingTurn int
 
 	for evt := range stream {
 		switch evt.Type {
+		case engine.EventThinkingDelta:
+			// 每轮 Thinking 开始时重置，只保留最近一轮的思考内容。
+			if evt.Turn != lastThinkingTurn {
+				lastThinking.Reset()
+				lastThinkingTurn = evt.Turn
+			}
+			if text, ok := evt.Data.(string); ok {
+				lastThinking.WriteString(text)
+			}
+
 		case engine.EventActionDelta:
 			if text, ok := evt.Data.(string); ok {
 				reply.WriteString(text)
 			}
 
 		case engine.EventToolStart:
+			// 本 Turn 有工具调用，该轮 Action 文本不是最终回复，重置。
+			reply.Reset()
 			if tc, ok := evt.Data.(schema.ToolCall); ok {
 				toolCalls[tc.ID] = tc
 				toolStartTimes[tc.ID] = time.Now()
@@ -93,7 +113,12 @@ func (s *Server) handleMessage(ctx context.Context, msg imchannel.IncomingMessag
 			}
 
 		case engine.EventDone:
-			if err := session.SendReply(ctx, reply.String()); err != nil {
+			// Action 文本优先；若为空则用 Thinking 兜底（模型将回答放在思考阶段时）。
+			finalText := reply.String()
+			if finalText == "" {
+				finalText = lastThinking.String()
+			}
+			if err := session.SendReply(ctx, finalText); err != nil {
 				log.Printf("[server] SendReply 失败: %v", err)
 			}
 

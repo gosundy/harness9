@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
 	"strings"
 	"time"
 
@@ -102,15 +101,6 @@ func (s *Session) SendReply(ctx context.Context, text string) error {
 		return fmt.Errorf("feishu SendReply: code=%d msg=%s", resp.Code, resp.Msg)
 	}
 
-	// 删除进度占位消息，清理会话消息流
-	if s.msgID != "" {
-		if _, delErr := s.client.Im.Message.Delete(ctx,
-			larkim.NewDeleteMessageReqBuilder().
-				MessageId(s.msgID).
-				Build()); delErr != nil {
-			log.Printf("[feishu] 删除进度消息失败 (msgID=%s): %v", s.msgID, delErr)
-		}
-	}
 	return nil
 }
 
