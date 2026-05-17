@@ -104,3 +104,41 @@ func (m *mockProvider) simulateResponse(tools []schema.ToolDefinition) *schema.M
 func NewMock() provider.LLMProvider {
 	return &mockProvider{}
 }
+
+// MockWithCallback 是可自定义回调的 Mock Provider，用于测试中捕获传入的消息。
+type MockWithCallback struct {
+	fn func(msgs []schema.Message, tools []schema.ToolDefinition) schema.Message
+}
+
+// NewMockWithCallback 创建每次 Generate 调用都执行 fn 的 Mock Provider。
+func NewMockWithCallback(fn func([]schema.Message, []schema.ToolDefinition) schema.Message) *MockWithCallback {
+	return &MockWithCallback{fn: fn}
+}
+
+func (m *MockWithCallback) Generate(_ context.Context, msgs []schema.Message, tools []schema.ToolDefinition) (*schema.Message, error) {
+	result := m.fn(msgs, tools)
+	return &result, nil
+}
+
+func (m *MockWithCallback) GenerateStream(ctx context.Context, msgs []schema.Message, tools []schema.ToolDefinition) (<-chan schema.StreamChunk, error) {
+	result := m.fn(msgs, tools)
+	ch := make(chan schema.StreamChunk)
+	go func() {
+		defer close(ch)
+		send := func(chunk schema.StreamChunk) bool {
+			select {
+			case <-ctx.Done():
+				return false
+			case ch <- chunk:
+				return true
+			}
+		}
+		if result.Content != "" {
+			if !send(schema.StreamChunk{Type: schema.StreamChunkTextDelta, Delta: result.Content}) {
+				return
+			}
+		}
+		send(schema.StreamChunk{Type: schema.StreamChunkDone, Message: &result})
+	}()
+	return ch, nil
+}

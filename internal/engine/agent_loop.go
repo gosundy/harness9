@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/harness9/internal/logfmt"
+	"github.com/harness9/internal/memory"
 	"github.com/harness9/internal/provider"
 	"github.com/harness9/internal/schema"
 	"github.com/harness9/internal/tools"
@@ -47,6 +48,24 @@ func WithPromptBuilder(pb PromptBuilder) Option {
 	return func(e *AgentEngine) { e.promptBuilder = pb }
 }
 
+// WithSession 绑定 Session，使 runLoop 在启动时加载历史、结束时保存新消息。
+func WithSession(s memory.Session) Option {
+	return func(e *AgentEngine) { e.session = s }
+}
+
+// WithCompactor 绑定上下文压缩策略，在每次 LLM 调用前裁剪历史消息。
+func WithCompactor(c memory.Compactor) Option {
+	return func(e *AgentEngine) { e.compactor = c }
+}
+
+// SetSession 替换当前绑定的 Session，供 TUI /new、/resume 命令切换会话时调用。
+// 线程安全：可从任意 goroutine 调用（如 TUI goroutine）。
+func (e *AgentEngine) SetSession(s memory.Session) {
+	e.mu.Lock()
+	e.session = s
+	e.mu.Unlock()
+}
+
 // AgentEngine 是 harness9 agent loop 的核心编排器，将 LLM Provider（"大脑"）
 // 与 Tool Registry（"双手"）组合在一起，执行多轮 ReAct 循环直到任务完成。
 type AgentEngine struct {
@@ -57,6 +76,9 @@ type AgentEngine struct {
 	toolTimeout        time.Duration
 	maxConcurrentTools int
 	promptBuilder      PromptBuilder
+	mu                 sync.RWMutex     // protects session and compactor
+	session            memory.Session   // 可选，nil 表示无持久化
+	compactor          memory.Compactor // 可选，nil 表示不压缩
 }
 
 // NewAgentEngine 创建新的 AgentEngine。默认值：maxTurns=50, toolTimeout=60s。
@@ -113,13 +135,13 @@ func (e *AgentEngine) Run(ctx context.Context, userPrompt string) error {
 func (e *AgentEngine) runLoop(ctx context.Context, userPrompt string, logPrefix string, em emitter) error {
 	log.Print(logfmt.FormatLoopStart(logPrefix, e.workDir, e.maxTurns, e.toolTimeout, e.maxConcurrentTools))
 
-	contextHistory := []schema.Message{
-		{
-			Role:    schema.RoleSystem,
-			Content: e.buildSystemPrompt(),
-		},
-		{Role: schema.RoleUser, Content: userPrompt},
-	}
+	// 在循环开始时快照 session 和 compactor，避免与 TUI goroutine 的 SetSession 产生数据竞争。
+	e.mu.RLock()
+	sess := e.session
+	comp := e.compactor
+	e.mu.RUnlock()
+
+	contextHistory, startLen := e.loadHistoryWith(ctx, userPrompt, sess)
 
 	turnCount := 0
 	overallStart := time.Now()
@@ -141,7 +163,7 @@ func (e *AgentEngine) runLoop(ctx context.Context, userPrompt string, logPrefix 
 		log.Print(logfmt.FormatTurnStart(logPrefix, turnCount, len(contextHistory), len(availableTools)))
 
 		llmStart := time.Now()
-		responseMsg, err := em.generate(ctx, turnCount, contextHistory, availableTools)
+		responseMsg, err := em.generate(ctx, turnCount, e.applyCompactionWith(comp, contextHistory), availableTools)
 		if err != nil {
 			return fmt.Errorf("模型生成失败 (turn %d): %w", turnCount, err)
 		}
@@ -169,6 +191,7 @@ func (e *AgentEngine) runLoop(ctx context.Context, userPrompt string, logPrefix 
 		log.Print(logfmt.FormatObservation(logPrefix, turnCount, len(contextHistory), llmDuration, toolDuration, time.Since(turnStart)))
 	}
 
+	e.saveHistoryWith(ctx, sess, contextHistory, startLen)
 	log.Print(logfmt.FormatLoopEnd(logPrefix, turnCount, time.Since(overallStart)))
 	return nil
 }
@@ -185,6 +208,48 @@ func (e *AgentEngine) buildSystemPrompt() string {
 			"Your working directory is: %s",
 		e.workDir,
 	)
+}
+
+// loadHistoryWith 从 sess 加载历史消息，注入 system prompt 和当前用户输入。
+// sess 为 nil 时退化为原有行为（全新 contextHistory）。
+// 返回完整历史切片和新消息的起始索引（用于 saveHistoryWith）。
+func (e *AgentEngine) loadHistoryWith(ctx context.Context, userPrompt string, sess memory.Session) ([]schema.Message, int) {
+	var history []schema.Message
+	if sess != nil {
+		msgs, err := sess.GetMessages(ctx, 0)
+		if err != nil {
+			log.Print(logfmt.FormatMsg("engine", fmt.Sprintf("加载会话历史失败: %v", err)))
+		} else {
+			history = msgs
+		}
+	}
+	// system prompt 不持久化到 DB，每次调用时重新注入
+	if len(history) == 0 || history[0].Role != schema.RoleSystem {
+		history = append([]schema.Message{{Role: schema.RoleSystem, Content: e.buildSystemPrompt()}}, history...)
+	}
+	startLen := len(history) // 新消息从此处开始；system prompt 不计入持久化范围
+	history = append(history, schema.Message{Role: schema.RoleUser, Content: userPrompt})
+	return history, startLen
+}
+
+// applyCompactionWith 对消息列表应用压缩策略。comp 为 nil 时原样返回。
+func (e *AgentEngine) applyCompactionWith(comp memory.Compactor, msgs []schema.Message) []schema.Message {
+	if comp == nil {
+		return msgs
+	}
+	return comp.Compact(msgs)
+}
+
+// saveHistoryWith 将本次 Run 新增的消息（msgs[startLen:]）写回 sess。
+// sess 为 nil 时为 no-op；失败仅打 warning 日志，不中断主流程。
+func (e *AgentEngine) saveHistoryWith(ctx context.Context, sess memory.Session, msgs []schema.Message, startLen int) {
+	if sess == nil || startLen >= len(msgs) {
+		return
+	}
+	newMsgs := msgs[startLen:]
+	if err := sess.AddMessages(ctx, newMsgs); err != nil {
+		log.Print(logfmt.FormatMsg("engine", fmt.Sprintf("保存会话历史失败: %v", err)))
+	}
 }
 
 // executeTools 并发执行所有工具调用，每个工具带有独立的超时控制。
