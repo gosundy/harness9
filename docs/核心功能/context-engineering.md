@@ -38,7 +38,7 @@ Context Engineering 模块覆盖以下能力：
 │   runLoop()（每个 Turn）：                                         │
 │     1. loadHistoryWith()    ← Session 加载 + system prompt 注入   │
 │     2. EstimateTokens()     ← 预检：预估 token 用量              │
-│     3. applyCompactionWith()← 压缩（TokenBudgetCompactor）        │
+│     3. applyCompactionWith()← 压缩（SummarizationCompactor）       │
 │     4. tokenUpdate(est)     ← 发出估算值给 TUI                    │
 │     5. em.generate()        ← LLM 调用，获取 *Usage              │
 │     6. tokenUpdate(actual)  ← 用实际值更新 TUI                   │
@@ -61,8 +61,9 @@ Context Engineering 模块覆盖以下能力：
 │  └── tool_calls JSON 序列化                                      │
 │                                                                  │
 │  Compactor (interface)                                           │
-│  ├── SlidingWindowCompactor  ← 按消息条数裁剪（简单回退方案）       │
-│  └── TokenBudgetCompactor    ← Token Budget 感知压缩（默认）      │
+│  ├── SummarizationCompactor  ← LLM 摘要压缩（默认，含回退）        │
+│  ├── TokenBudgetCompactor    ← Token Budget 感知截断（回退策略）   │
+│  └── SlidingWindowCompactor  ← 按消息条数裁剪（简单回退方案）       │
 │                                                                  │
 │  token.go                    model_limits.go                     │
 │  ├── EstimateTokens()        ├── GetModelLimits(name)            │
@@ -268,7 +269,76 @@ func NewTokenBudgetCompactor(contextWindow int) *TokenBudgetCompactor {
 - 避免因估算误差（char÷4 是近似值）导致 API 超限
 - 给 LLM 生成输出保留空间
 
-### 6.3 孤立工具对修复（repairOrphanedToolPairs）
+### 6.3 SummarizationCompactor（LLM 摘要压缩）
+
+`SummarizationCompactor` 调用 LLM 将旧消息压缩为结构化摘要，在语义保留方面显著优于截断策略。
+
+**接口设计：**
+
+```go
+// Summarizer 定义在 memory 包（使用者侧），任何 provider.LLMProvider 均满足此接口。
+type Summarizer interface {
+    Generate(ctx context.Context, messages []schema.Message, availableTools []schema.ToolDefinition) (*schema.Message, *schema.Usage, error)
+}
+```
+
+**配置：**
+- `Provider Summarizer` — 执行摘要的 LLM
+- `MaxTokens int` — 触发压缩的 token 预算（通常 `contextWindow × 80%`）
+- `MinTailMessages int` — 尾部强制保留的最少消息条数（默认 6）
+- `Fallback Compactor` — Provider 调用失败时的回退策略（默认 `TokenBudgetCompactor`）
+
+**压缩算法：**
+
+```
+输入：msgs = [system, msg1, ..., msgN]
+
+1. EstimateTokens(msgs) ≤ MaxTokens → 直接返回（无需压缩）
+2. msgs[0].Role ≠ RoleSystem → 直接返回（防御）
+3. 分割：head = msgs[1 : N-minTail]，tail = msgs[N-minTail:]
+4. len(head) == 0 → 直接返回（没有可摘要的消息）
+5. 调用 summarize(head) → summary string
+6. 成功：返回 [system, {user: "[Conversation Summary]\n"+summary}, ...tail]
+           + repairOrphanedToolPairs()
+7. 失败：回退 Fallback.Compact(msgs)
+```
+
+**增量更新机制：**
+
+当 head 中已含有上次摘要消息（以 `[Conversation Summary]` 开头），`summarize` 会提取旧摘要并构造增量更新 prompt：
+
+```
+<previous-summary>
+{上次摘要内容}
+</previous-summary>
+
+New conversation to merge:
+{新对话文本}
+```
+
+这避免了多轮压缩后信息叠加丢失的问题。
+
+**摘要输出格式（summaryTemplate）：**
+
+```
+**Goal:** What the user is trying to accomplish.
+**Progress:** Key actions taken and their results.
+**Key Decisions:** Important choices and rationale.
+**Next Steps:** What was planned or pending.
+**Critical Context:** Facts, file paths, variable names, or constraints the agent must remember.
+```
+
+**与 TokenBudgetCompactor 的对比：**
+
+| 维度 | TokenBudgetCompactor | SummarizationCompactor |
+|------|---------------------|------------------------|
+| 语义保留 | 截断（旧消息完全丢失） | LLM 摘要（关键信息保留） |
+| 速度 | 极快（无 LLM 调用） | 有额外 LLM 调用延迟 |
+| 成本 | 零 | 摘要 API 费用 |
+| 可用性 | 始终可用 | 依赖 Provider 可用性 |
+| 推荐场景 | 快速原型、成本敏感 | 长任务、信息密集型对话 |
+
+### 6.4 孤立工具对修复（repairOrphanedToolPairs）
 
 TokenBudgetCompactor 在截断后，尾部切片可能存在两类孤立消息，需要修复：
 
@@ -672,14 +742,15 @@ case engine.EventCompaction:
 ## 11. main.go 初始化
 
 ```go
-// 获取模型 context window，构建 TokenBudgetCompactor
+// 获取模型 context window，构建 SummarizationCompactor（默认压缩策略）
 modelName := os.Getenv("LLM_MODEL")
 if modelName == "" {
     modelName = "openai/gpt-4o-mini"
 }
 
 modelLimits := provider.GetModelLimits(modelName)
-compactor := memory.NewTokenBudgetCompactor(modelLimits.ContextTokens)
+// SummarizationCompactor 使用同一 LLM 生成摘要，内置 TokenBudgetCompactor 作为错误回退。
+compactor := memory.NewSummarizationCompactor(llm, modelLimits.ContextTokens)
 
 eng := engine.NewAgentEngine(llm, registry, workDir,
     engine.WithPromptBuilder(promptBuilder),
@@ -698,7 +769,7 @@ eng := engine.NewAgentEngine(llm, registry, workDir,
 | **SQLite WAL 模式** | 进程重启可恢复，`/resume` 功能依赖持久化；WAL 支持并发读写 |
 | **纯 Go SQLite（modernc.org/sqlite）** | 无 CGo 依赖，与 harness9 零 CGo 目标一致，交叉编译友好 |
 | **System Prompt 不持久化** | Prompt 可随 PromptBuilder / AGENTS.md 更新而变化，不应被历史数据锁定 |
-| **TokenBudgetCompactor 为默认** | 感知真实 token 用量，压缩时机准确；SlidingWindowCompactor 作为简单回退 |
+| **SummarizationCompactor 为默认** | LLM 摘要保留语义，优于截断；内置 TokenBudgetCompactor 作为错误回退，保证可用性 |
 | **80% 触发阈值** | 预留 20% 给工具定义 token（可达 20-30K）和估算误差缓冲 |
 | **双向孤立工具对修复** | Anthropic API 严格要求 tool_call / tool_result 配对，单向回溯不够 |
 | **char÷4 估算 + API 实际值校正** | 无依赖估算用于压缩决策；实际值用于 TUI 展示精度 |
@@ -714,7 +785,6 @@ eng := engine.NewAgentEngine(llm, registry, workDir,
 
 | 功能 | 优先级 | 说明 |
 |------|--------|------|
-| LLM-based 摘要压缩 | P3 | 调用 LLM 生成历史摘要，替代简单截断 |
 | FTS5 全文会话搜索 | P3 | `/search` 命令，搜索历史对话内容 |
 | TTL 自动过期清理 | P3 | 定期清除旧会话，控制磁盘占用 |
 | CLI 模式 session 支持 | P3 | CLI 当前为无状态 REPL |

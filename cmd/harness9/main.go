@@ -115,7 +115,8 @@ func main() {
 	}
 
 	modelLimits := provider.GetModelLimits(modelName)
-	compactor := memory.NewTokenBudgetCompactor(modelLimits.ContextTokens)
+	// SummarizationCompactor 使用同一 LLM 生成摘要，内置 TokenBudgetCompactor 作为错误回退。
+	compactor := memory.NewSummarizationCompactor(llm, modelLimits.ContextTokens)
 
 	eng := engine.NewAgentEngine(llm, registry, workDir,
 		engine.WithPromptBuilder(promptBuilder),
