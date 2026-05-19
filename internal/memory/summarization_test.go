@@ -117,7 +117,7 @@ func TestSummarizationCompactor_CallsProviderAndInjectsSummary(t *testing.T) {
 
 	input := []schema.Message{
 		{Role: schema.RoleSystem, Content: "sys"},
-		{Role: schema.RoleUser, Content: longContent(400)},    // head
+		{Role: schema.RoleUser, Content: longContent(400)},      // head
 		{Role: schema.RoleAssistant, Content: longContent(400)}, // head
 		{Role: schema.RoleUser, Content: "recent user"},         // tail
 		{Role: schema.RoleAssistant, Content: "recent asst"},    // tail
