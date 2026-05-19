@@ -600,4 +600,3 @@ func (m tuiModel) handleResumeSelection(raw string) (tea.Model, tea.Cmd) {
 	m.input.Focus()
 	return m, textinput.Blink
 }
-

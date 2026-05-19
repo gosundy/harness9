@@ -16,8 +16,8 @@ func TestEstimateTokens_Empty(t *testing.T) {
 
 func TestEstimateTokens_ContentOnly(t *testing.T) {
 	msgs := []schema.Message{
-		{Role: schema.RoleSystem, Content: "abcd"},     // 4 chars → 1 token
-		{Role: schema.RoleUser, Content: "abcdefgh"},   // 8 chars → 2 tokens
+		{Role: schema.RoleSystem, Content: "abcd"},   // 4 chars → 1 token
+		{Role: schema.RoleUser, Content: "abcdefgh"}, // 8 chars → 2 tokens
 	}
 	got := memory.EstimateTokens(msgs)
 	if got != 3 {
