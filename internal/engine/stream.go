@@ -34,6 +34,14 @@ const (
 
 	// EventError 表示 agent loop 中发生了错误。Data 类型为 string（错误描述）。
 	EventError EventType = "error"
+
+	// EventTokenUpdate 在每次 LLM 调用前发出，报告当前轮次的上下文 token 估算值。
+	// Data 类型为 TokenUpdateData。
+	EventTokenUpdate EventType = "token_update"
+
+	// EventCompaction 在上下文发生有效压缩时发出（token 数减少 > 5%）。
+	// Data 类型为 CompactionData。
+	EventCompaction EventType = "compaction"
 )
 
 // Event 是引擎面向客户端的流式事件单元。RunStream 返回 <-chan Event，
@@ -56,8 +64,29 @@ type Event struct {
 	Turn int       `json:"turn,omitempty"`
 	// Data 事件载荷，类型随 Type 变化：
 	//   EventActionDelta → string, EventToolStart → schema.ToolCall,
-	//   EventToolResult → schema.ToolResult, EventDone → nil, EventError → string
+	//   EventToolResult → schema.ToolResult, EventDone → nil, EventError → string,
+	//   EventTokenUpdate → TokenUpdateData, EventCompaction → CompactionData
 	Data any `json:"data,omitempty"`
+}
+
+// TokenUpdateData 是 EventTokenUpdate 事件的载荷。
+type TokenUpdateData struct {
+	// EstimatedTokens 当前上下文的估算 token 数（消息 + 工具定义）。
+	EstimatedTokens int `json:"estimated_tokens"`
+	// ContextWindow 当前模型的最大 context window（tokens）。0 表示未知。
+	ContextWindow int `json:"context_window"`
+}
+
+// CompactionData 是 EventCompaction 事件的载荷。
+type CompactionData struct {
+	// TokensBefore 压缩前的估算 token 数。
+	TokensBefore int `json:"tokens_before"`
+	// TokensAfter 压缩后的估算 token 数。
+	TokensAfter int `json:"tokens_after"`
+	// MsgsBefore 压缩前的消息条数。
+	MsgsBefore int `json:"msgs_before"`
+	// MsgsAfter 压缩后的消息条数。
+	MsgsAfter int `json:"msgs_after"`
 }
 
 // sendEvent 向 Event channel 发送事件，同时感知 context 取消。
@@ -91,6 +120,15 @@ func (e *AgentEngine) RunStream(ctx context.Context, userPrompt string) (<-chan 
 			toolDone: func(turn int, tc schema.ToolCall, result schema.ToolResult, d time.Duration) {
 				log.Print(logfmt.FormatToolDone("engine-stream", turn, tc, result, d))
 				sendEvent(ctx, ch, Event{Type: EventToolResult, Turn: turn, Data: result})
+			},
+			tokenUpdate: func(tokens, window int) {
+				sendEvent(ctx, ch, Event{Type: EventTokenUpdate, Data: TokenUpdateData{
+					EstimatedTokens: tokens,
+					ContextWindow:   window,
+				}})
+			},
+			compaction: func(data CompactionData) {
+				sendEvent(ctx, ch, Event{Type: EventCompaction, Data: data})
 			},
 		}
 
