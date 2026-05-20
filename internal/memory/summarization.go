@@ -14,6 +14,12 @@ type Summarizer interface {
 	Generate(ctx context.Context, messages []schema.Message, availableTools []schema.ToolDefinition) (*schema.Message, *schema.Usage, error)
 }
 
+// TodoInjector 由 planning.TodoStore 实现，将活跃任务注入上下文压缩摘要。
+// 定义在 memory 包（使用者侧），符合 Go 接口定义惯例。
+type TodoInjector interface {
+	FormatForInjection() string
+}
+
 const (
 	// summaryMarker 用于标识摘要消息，支持在下次压缩时识别并增量更新。
 	summaryMarker = "[Conversation Summary]"
@@ -54,6 +60,8 @@ type SummarizationCompactor struct {
 	MinTailMessages int
 	// Fallback 在 Provider 调用失败时使用。若为 nil，则创建同配置的 TokenBudgetCompactor。
 	Fallback Compactor
+	// TodoInjector 若非 nil，在每次摘要末尾注入活跃任务列表。
+	TodoInjector TodoInjector
 }
 
 // NewSummarizationCompactor 创建针对指定 context window 大小的 SummarizationCompactor。
@@ -92,9 +100,15 @@ func (c *SummarizationCompactor) Compact(msgs []schema.Message) []schema.Message
 		return c.fallback().Compact(msgs)
 	}
 
+	summaryContent := summaryMarker + "\n" + summary
+	if c.TodoInjector != nil {
+		if todoText := c.TodoInjector.FormatForInjection(); todoText != "" {
+			summaryContent += "\n\n## Active Tasks\n" + todoText
+		}
+	}
 	summaryMsg := schema.Message{
 		Role:    schema.RoleUser,
-		Content: summaryMarker + "\n" + summary,
+		Content: summaryContent,
 	}
 
 	result := make([]schema.Message, 0, 2+len(tail))
@@ -179,4 +193,10 @@ func (c *SummarizationCompactor) fallback() Compactor {
 		MaxTokens:       c.maxTokens(),
 		MinTailMessages: c.minTail(),
 	}
+}
+
+// WithTodoInjector 为 SummarizationCompactor 设置 TodoInjector。
+// 典型用法：main.go 创建 TodoStore 后通过此函数注入。
+func WithTodoInjector(s *SummarizationCompactor, ti TodoInjector) {
+	s.TodoInjector = ti
 }
