@@ -138,7 +138,8 @@ type tuiModel struct {
 	todoBlockLen   int // todo 块当前占用的行数
 
 	// Plan Mode 状态
-	planMode planning.PlanMode
+	planMode      planning.PlanMode
+	planReviewing bool // Plan Mode 完成后展示审查对话框
 }
 
 // newTUIModel 构造已初始化的 tuiModel：输入框聚焦，spinner 使用 Dot 样式。
@@ -167,6 +168,7 @@ func newTUIModel(eng *engine.AgentEngine, idx *skills.Index, mgr *memory.Manager
 		todoStore:      todoStore,
 		todoBlockStart: -1,
 		planMode:       planning.PlanModeDefault,
+		planReviewing:  false,
 	}
 	if sess != nil {
 		m.sessionID = sess.SessionID()

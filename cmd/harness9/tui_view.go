@@ -154,6 +154,24 @@ func (m tuiModel) renderStatusBar() string {
 	return statusBarStyle.Width(m.width).Render(content)
 }
 
+// renderPlanReviewDialog 渲染 Plan Mode 完成后的审查选择对话框。
+func (m tuiModel) renderPlanReviewDialog() string {
+	planStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("208")).Bold(true)
+	boxStyle := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color("208")).
+		Padding(0, 2).
+		Width(50)
+
+	content := planStyle.Render("Plan Mode 完成 — 选择下一步操作") + "\n\n" +
+		cyanStyle.Render("[1]") + "  批准并自动执行\n" +
+		cyanStyle.Render("[2]") + "  批准并逐步确认编辑\n" +
+		cyanStyle.Render("[3]") + "  继续修改计划（保持 Plan Mode）\n" +
+		cyanStyle.Render("[4]") + "  取消"
+
+	return boxStyle.Render(content)
+}
+
 // renderInput 渲染输入行。
 func (m tuiModel) renderInput() string {
 	return "  › " + m.input.View()
@@ -211,6 +229,12 @@ func (m tuiModel) View() string {
 		if m.running && m.currentTool != "" {
 			sb.WriteString(m.renderToolProgress())
 			sb.WriteByte('\n')
+		}
+		if m.planReviewing {
+			sb.WriteString(m.renderPlanReviewDialog())
+			sb.WriteByte('\n')
+			sb.WriteString(m.renderStatusBar())
+			return sb.String()
 		}
 		sb.WriteString(m.renderStatusBar())
 		sb.WriteByte('\n')

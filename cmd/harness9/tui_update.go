@@ -16,6 +16,7 @@ import (
 
 	"github.com/harness9/internal/engine"
 	"github.com/harness9/internal/memory"
+	"github.com/harness9/internal/planning"
 	"github.com/harness9/internal/schema"
 )
 
@@ -26,6 +27,7 @@ var builtinCmds = []struct {
 }{
 	{"new", "开启新会话"},
 	{"resume", "恢复历史会话"},
+	{"plan", "进入规划模式分析任务"},
 	{"exit", "退出 TUI"},
 }
 
@@ -65,6 +67,40 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tea.KeyMsg:
+		// 审查对话框激活时：数字键 1-4 控制模式选择，其他键忽略
+		if m.planReviewing {
+			switch msg.String() {
+			case "1":
+				m.planReviewing = false
+				m.planMode = planning.PlanModeDefault
+				if m.eng != nil {
+					m.eng.SetPlanMode(planning.PlanModeDefault)
+				}
+				m.input.Focus()
+				return m, textinput.Blink
+			case "2":
+				m.planReviewing = false
+				m.planMode = planning.PlanModeAutoEdit
+				if m.eng != nil {
+					m.eng.SetPlanMode(planning.PlanModeAutoEdit)
+				}
+				m.input.Focus()
+				return m, textinput.Blink
+			case "3":
+				m.planReviewing = false
+				m.input.Focus()
+				return m, textinput.Blink
+			case "4":
+				m.planReviewing = false
+				m.planMode = planning.PlanModeDefault
+				if m.eng != nil {
+					m.eng.SetPlanMode(planning.PlanModeDefault)
+				}
+				m.input.Focus()
+				return m, textinput.Blink
+			}
+			return m, nil
+		}
 		switch msg.Type {
 		case tea.KeyCtrlC, tea.KeyCtrlD:
 			if m.running {
@@ -87,6 +123,14 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if !m.running {
 				m = m.cycleCompletion()
 				m.completionHint = m.buildCompletionHint()
+			}
+			return m, nil
+		case tea.KeyShiftTab:
+			if !m.running {
+				m.planMode = m.planMode.Next()
+				if m.eng != nil {
+					m.eng.SetPlanMode(m.planMode)
+				}
 			}
 			return m, nil
 		case tea.KeyEnter:
@@ -121,6 +165,19 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			if raw == "/resume" {
 				return m.handleResumeList()
+			}
+
+			// /plan <task> — 进入 Plan Mode 并发送任务
+			if strings.HasPrefix(raw, "/plan") {
+				task := strings.TrimSpace(strings.TrimPrefix(raw, "/plan"))
+				m.planMode = planning.PlanModePlan
+				if m.eng != nil {
+					m.eng.SetPlanMode(planning.PlanModePlan)
+				}
+				if task == "" {
+					task = "Please analyze the codebase and produce a detailed implementation plan."
+				}
+				raw = task
 			}
 
 			// 处理斜杠命令 / 普通输入
@@ -240,6 +297,11 @@ func (m tuiModel) handleEvent(evt engine.Event) (tea.Model, tea.Cmd) {
 		m.running = false
 		m.currentTool = ""
 		m.toolArgs = nil
+		// Plan Mode 完成后展示审查对话框
+		if m.planMode == planning.PlanModePlan {
+			m.planReviewing = true
+			return m, nil
+		}
 		// 纯工具执行无文字回复时，补充完成标记
 		if len(m.lines) > 0 && m.lines[len(m.lines)-1] == "" {
 			m.lines[len(m.lines)-1] = doneStyle.Render("  ✅ 任务完成")
