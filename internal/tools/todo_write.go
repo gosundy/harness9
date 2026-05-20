@@ -65,26 +65,39 @@ func (t *TodoWriteTool) Execute(_ context.Context, args json.RawMessage) (string
 
 	var current []planning.TodoItem
 	if len(input.Todos) > 0 {
-		// 校验：item 只能在经过 in_progress 后才能变为 completed。
-		// 禁止 pending/cancelled/新建 → completed 的直接跳转（LLM 作弊防护）。
+		// 批量作弊防护规则：
+		//   - pending/new → completed：单次调用最多允许 1 个（LLM 完成工作后可跳过 in_progress）
+		//   - cancelled → completed：始终拒绝（必须先恢复为 pending/in_progress）
+		//   - in_progress/completed → completed：始终允许
 		prev := t.store.Read()
 		prevStatus := make(map[string]planning.TodoStatus, len(prev))
 		for _, item := range prev {
 			prevStatus[item.ID] = item.Status
 		}
+		var directCompletions int
 		for _, item := range input.Todos {
 			if item.Status != planning.TodoCompleted {
 				continue
 			}
 			prior, exists := prevStatus[item.ID]
-			if !exists || (prior != planning.TodoInProgress && prior != planning.TodoCompleted) {
-				priorStr := "new"
-				if exists {
-					priorStr = string(prior)
-				}
-				return "", fmt.Errorf("任务 %q 不能直接标记为 completed（当前状态：%s）；请先将其标记为 in_progress，完成实际操作后再标记为 completed",
-					item.ID, priorStr)
+			if !exists || prior == planning.TodoPending {
+				// 新条目或 pending → completed：计入直接完成数，超过 1 个则拒绝。
+				directCompletions++
+				continue
 			}
+			if prior == planning.TodoCancelled {
+				// cancelled → completed 明确拒绝：取消的任务必须先恢复为 pending 或 in_progress。
+				return "", fmt.Errorf(
+					"任务 %q 已取消，不能直接标记为 completed；如需重新执行，请先将其恢复为 pending 或 in_progress。",
+					item.ID)
+			}
+			// prior == in_progress 或 completed → 合法路径，不计入。
+		}
+		if directCompletions > 1 {
+			return "", fmt.Errorf(
+				"不允许在一次调用中将 %d 个任务直接标记为 completed（未经 in_progress）。"+
+					"请逐一处理：每次仅完成一项实际工作后更新该条目状态。",
+				directCompletions)
 		}
 		current = t.store.Write(input.Todos)
 	} else {

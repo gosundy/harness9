@@ -106,8 +106,10 @@ func TestTodoWriteTool_InvalidJSON(t *testing.T) {
 	}
 }
 
-// TestTodoWriteTool_PendingToCompleted 验证 pending→completed 被拒绝（LLM 作弊防护）。
-func TestTodoWriteTool_PendingToCompleted(t *testing.T) {
+// TestTodoWriteTool_BulkPendingToCompleted 验证批量 pending→completed（2 个以上）被拒绝。
+// 单个任务直接 pending→completed 允许（LLM 实际完成工作但未经 in_progress 步骤），
+// 但同时完成 2+ 个未开始的任务视为作弊行为。
+func TestTodoWriteTool_BulkPendingToCompleted(t *testing.T) {
 	store := planning.NewTodoStore()
 	tool := tools.NewTodoWriteTool(store)
 
@@ -122,7 +124,7 @@ func TestTodoWriteTool_PendingToCompleted(t *testing.T) {
 		t.Fatalf("init failed: %v", err)
 	}
 
-	// 尝试直接将 pending 标记为 completed（绕过 in_progress）
+	// 尝试在一次调用中将两个 pending 任务全部标记为 completed（批量作弊）
 	cheat, _ := json.Marshal(map[string]interface{}{
 		"todos": []map[string]string{
 			{"id": "1", "content": "task one", "status": "completed"},
@@ -131,7 +133,7 @@ func TestTodoWriteTool_PendingToCompleted(t *testing.T) {
 	})
 	_, err := tool.Execute(context.Background(), cheat)
 	if err == nil {
-		t.Error("expected error when jumping pending→completed, got nil")
+		t.Error("expected error when bulk-completing 2 pending items, got nil")
 	}
 
 	// store 应保持未变
@@ -140,6 +142,33 @@ func TestTodoWriteTool_PendingToCompleted(t *testing.T) {
 		if item.Status == planning.TodoCompleted {
 			t.Errorf("store should not have completed items after rejected write, got %+v", stored)
 		}
+	}
+}
+
+// TestTodoWriteTool_SinglePendingToCompleted 验证单个 pending→completed 允许通过。
+// LLM 完成工作后可以直接标记为 completed，不强制要求经过 in_progress。
+func TestTodoWriteTool_SinglePendingToCompleted(t *testing.T) {
+	store := planning.NewTodoStore()
+	tool := tools.NewTodoWriteTool(store)
+
+	// 初始化：一个 pending 任务
+	init, _ := json.Marshal(map[string]interface{}{
+		"todos": []map[string]string{
+			{"id": "1", "content": "task one", "status": "pending"},
+		},
+	})
+	if _, err := tool.Execute(context.Background(), init); err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+
+	// 单个 pending → completed 应该允许（LLM 完成了实际工作）
+	complete, _ := json.Marshal(map[string]interface{}{
+		"todos": []map[string]string{
+			{"id": "1", "content": "task one", "status": "completed"},
+		},
+	})
+	if _, err := tool.Execute(context.Background(), complete); err != nil {
+		t.Errorf("single pending→completed should be allowed, got error: %v", err)
 	}
 }
 
@@ -169,18 +198,80 @@ func TestTodoWriteTool_InProgressToCompleted(t *testing.T) {
 	}
 }
 
-// TestTodoWriteTool_NewItemCompleted 验证新条目不能直接创建为 completed。
-func TestTodoWriteTool_NewItemCompleted(t *testing.T) {
+// TestTodoWriteTool_CancelledToCompleted 验证 cancelled→completed 始终被拒绝。
+// cancelled 任务必须先恢复为 pending/in_progress 才能完成，不适用"单个允许"宽松规则。
+func TestTodoWriteTool_CancelledToCompleted(t *testing.T) {
 	store := planning.NewTodoStore()
 	tool := tools.NewTodoWriteTool(store)
 
+	// 初始化：一个 cancelled 任务
+	init, _ := json.Marshal(map[string]interface{}{
+		"todos": []map[string]string{
+			{"id": "1", "content": "task one", "status": "cancelled"},
+		},
+	})
+	if _, err := tool.Execute(context.Background(), init); err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+
+	// cancelled → completed 即使只有 1 个也应被拒绝
 	args, _ := json.Marshal(map[string]interface{}{
 		"todos": []map[string]string{
-			{"id": "1", "content": "brand new", "status": "completed"},
+			{"id": "1", "content": "task one", "status": "completed"},
 		},
 	})
 	_, err := tool.Execute(context.Background(), args)
 	if err == nil {
-		t.Error("expected error when creating new item as completed, got nil")
+		t.Error("expected error when cancelled→completed, got nil")
+	}
+}
+
+// TestTodoWriteTool_SingleDirectPlusInProgress 验证"1 个直接完成 + 1 个经 in_progress 完成"的
+// 混合调用允许通过（directCompletions == 1，未超过阈值）。
+func TestTodoWriteTool_SingleDirectPlusInProgress(t *testing.T) {
+	store := planning.NewTodoStore()
+	tool := tools.NewTodoWriteTool(store)
+
+	// 初始化：item1 pending，item2 in_progress
+	init, _ := json.Marshal(map[string]interface{}{
+		"todos": []map[string]string{
+			{"id": "1", "content": "task one", "status": "pending"},
+			{"id": "2", "content": "task two", "status": "in_progress"},
+		},
+	})
+	if _, err := tool.Execute(context.Background(), init); err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+
+	// item1: pending→completed（1 个直接完成），item2: in_progress→completed（合法）
+	// directCompletions == 1 → 应允许通过
+	args, _ := json.Marshal(map[string]interface{}{
+		"todos": []map[string]string{
+			{"id": "1", "content": "task one", "status": "completed"},
+			{"id": "2", "content": "task two", "status": "completed"},
+		},
+	})
+	if _, err := tool.Execute(context.Background(), args); err != nil {
+		t.Errorf("1 direct + 1 in_progress completion should be allowed, got error: %v", err)
+	}
+}
+
+// TestTodoWriteTool_BulkNewItemCompleted 验证批量新建 completed 条目（2 个以上）被拒绝。
+// 单个新建直接 completed 允许（LLM 可能完成了工作再创建记录），
+// 同时新建 2+ 个 completed 条目视为作弊。
+func TestTodoWriteTool_BulkNewItemCompleted(t *testing.T) {
+	store := planning.NewTodoStore()
+	tool := tools.NewTodoWriteTool(store)
+
+	// 同时创建 2 个已完成的全新条目 → 应被拒绝
+	args, _ := json.Marshal(map[string]interface{}{
+		"todos": []map[string]string{
+			{"id": "1", "content": "brand new one", "status": "completed"},
+			{"id": "2", "content": "brand new two", "status": "completed"},
+		},
+	})
+	_, err := tool.Execute(context.Background(), args)
+	if err == nil {
+		t.Error("expected error when creating 2 new items as completed, got nil")
 	}
 }
