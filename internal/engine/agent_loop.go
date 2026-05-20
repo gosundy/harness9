@@ -194,7 +194,7 @@ func (e *AgentEngine) runLoop(ctx context.Context, userPrompt string, logPrefix 
 	if sess != nil && todoStore != nil {
 		if todos, err := sess.GetTodos(ctx); err != nil {
 			log.Print(logfmt.FormatMsg(logPrefix, fmt.Sprintf("加载 todos 失败: %v", err)))
-		} else if len(todos) > 0 {
+		} else {
 			todoStore.Write(todos)
 		}
 	}

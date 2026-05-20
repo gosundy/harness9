@@ -168,7 +168,7 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 
 			// /plan <task> — 进入 Plan Mode 并发送任务
-			if strings.HasPrefix(raw, "/plan") {
+			if raw == "/plan" || strings.HasPrefix(raw, "/plan ") {
 				task := strings.TrimSpace(strings.TrimPrefix(raw, "/plan"))
 				m.planMode = planning.PlanModePlan
 				if m.eng != nil {
@@ -584,6 +584,8 @@ func (m tuiModel) handleNewSession() (tea.Model, tea.Cmd) {
 	}
 	m.session = sess
 	m.sessionID = sess.SessionID()
+	m.todoBlockStart = -1
+	m.todoBlockLen = 0
 	if m.eng != nil {
 		m.eng.SetSession(sess)
 	}
@@ -659,6 +661,8 @@ func (m tuiModel) handleResumeSelection(raw string) (tea.Model, tea.Cmd) {
 	}
 	m.session = sess
 	m.sessionID = info.ID
+	m.todoBlockStart = -1
+	m.todoBlockLen = 0
 	if m.eng != nil {
 		m.eng.SetSession(sess)
 	}
