@@ -187,9 +187,28 @@ func (e *AgentEngine) runLoop(ctx context.Context, userPrompt string, logPrefix 
 	sess := e.session
 	comp := e.compactor
 	planMode := e.planMode
+	todoStore := e.todoStore
 	e.mu.RUnlock()
 
+	// 启动时从 Session 恢复 TodoStore 状态（跨会话续接未完成任务）。
+	if sess != nil && todoStore != nil {
+		if todos, err := sess.GetTodos(ctx); err != nil {
+			log.Print(logfmt.FormatMsg(logPrefix, fmt.Sprintf("加载 todos 失败: %v", err)))
+		} else if len(todos) > 0 {
+			todoStore.Write(todos)
+		}
+	}
+
 	contextHistory, startLen := e.loadHistoryWith(ctx, userPrompt, sess)
+
+	// 结束时将 TodoStore 持久化到 Session（write-replace）。
+	defer func() {
+		if sess != nil && todoStore != nil {
+			if err := sess.SaveTodos(ctx, todoStore.Read()); err != nil {
+				log.Print(logfmt.FormatMsg(logPrefix, fmt.Sprintf("保存 todos 失败: %v", err)))
+			}
+		}
+	}()
 
 	turnCount := 0
 	overallStart := time.Now()
