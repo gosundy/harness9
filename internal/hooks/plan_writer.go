@@ -17,8 +17,9 @@ type FilePlanWriter struct {
 	sessionID string
 }
 
-// NewFilePlanWriter 计算 plan 文件路径并返回 FilePlanWriter。
+// NewFilePlanWriter 计算 plan 文件路径，创建目录，并返回 FilePlanWriter。
 // 通过检测 workDir/.git 判断是否为 git 项目。
+// 若目录无法创建则立即返回错误，实现启动时快速失败。
 func NewFilePlanWriter(workDir, homeDir, sessionID string) (*FilePlanWriter, error) {
 	timestamp := time.Now().Unix()
 	slug := sessionID
@@ -32,6 +33,10 @@ func NewFilePlanWriter(workDir, homeDir, sessionID string) (*FilePlanWriter, err
 		base = filepath.Join(workDir, ".harness9", "plans")
 	} else {
 		base = filepath.Join(homeDir, ".harness9", "plans")
+	}
+
+	if err := os.MkdirAll(base, 0700); err != nil {
+		return nil, fmt.Errorf("创建计划目录失败: %w", err)
 	}
 
 	return &FilePlanWriter{
@@ -48,11 +53,9 @@ func isGitRepo(workDir string) bool {
 
 // Write 将 todos 序列化为 markdown 并覆写计划文件。
 // 写入失败时返回 error（调用方决定是否记录日志，不中断主流程）。
+// 目录已在构造时由 NewFilePlanWriter 创建，此处无需再次检查。
 func (w *FilePlanWriter) Write(todos []planning.TodoItem) error {
-	if err := os.MkdirAll(filepath.Dir(w.path), 0700); err != nil {
-		return err
-	}
-	return os.WriteFile(w.path, []byte(formatPlanMarkdown(w.sessionID, todos)), 0644)
+	return os.WriteFile(w.path, []byte(formatPlanMarkdown(w.sessionID, todos)), 0600)
 }
 
 // Path 返回计划文件的绝对路径（供测试和日志使用）。
