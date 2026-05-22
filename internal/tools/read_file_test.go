@@ -96,3 +96,58 @@ func TestReadFileTool_Execute_PathTraversal(t *testing.T) {
 		t.Errorf("expected sandbox error, got: %v", err)
 	}
 }
+
+func TestReadFileTool_Execute_WithOffset(t *testing.T) {
+	dir := t.TempDir()
+	content := "line1\nline2\nline3\nline4\n"
+	if err := os.WriteFile(dir+"/f.txt", []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+	tool := NewReadFileTool(dir)
+
+	// offset=6 skips "line1\n", should start reading from "line2"
+	out, err := tool.Execute(context.Background(), json.RawMessage(`{"path":"f.txt","offset":6,"limit":5}`))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.HasPrefix(out, "line2") {
+		t.Errorf("expected output starting with 'line2', got %q", out)
+	}
+}
+
+func TestReadFileTool_Execute_OffsetBeyondEOF(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(dir+"/small.txt", []byte("hello"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	tool := NewReadFileTool(dir)
+
+	out, err := tool.Execute(context.Background(), json.RawMessage(`{"path":"small.txt","offset":1000}`))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(out, "offset=1000") || !strings.Contains(out, "超出") {
+		t.Errorf("expected offset-beyond-EOF message, got %q", out)
+	}
+}
+
+func TestReadFileTool_Execute_LimitTruncation(t *testing.T) {
+	dir := t.TempDir()
+	content := strings.Repeat("abcde", 100) // 500 bytes
+	if err := os.WriteFile(dir+"/big.txt", []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+	tool := NewReadFileTool(dir)
+
+	out, err := tool.Execute(context.Background(), json.RawMessage(`{"path":"big.txt","offset":0,"limit":20}`))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// First 20 bytes + truncation message
+	if !strings.HasPrefix(out, content[:20]) {
+		t.Errorf("expected first 20 bytes of content")
+	}
+	if !strings.Contains(out, "offset=20") {
+		t.Errorf("truncation message should hint next offset=20, got %q", out)
+	}
+}
