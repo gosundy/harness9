@@ -118,6 +118,41 @@ skills/
 
 详见 [Planning 模块实现原理](docs/核心功能/planning.md)。
 
+### 文件系统能力（Context Offload + Plan 持久化）
+
+工具输出超过阈值（默认 10,000 字符）时，**OffloadHook** 自动将完整内容写入文件，context 中仅保留摘要引用和预览，防止单次输出爆炸 context 窗口：
+
+```
+  ✓ bash(grep -r "TODO" .) — 1.2s
+[输出已保存至 ~/.harness9/tool_results/{sessionID}/{id}.txt，共 847 行 / 32416 字节。
+预览（前 20 行）：
+...
+```
+
+LLM 可通过 `read_file` 的 `offset/limit` 参数分页检索完整内容：
+
+```json
+read_file({"path": "~/.harness9/tool_results/.../id.txt", "offset": 4096, "limit": 4096})
+```
+
+**FilePlanWriter** 在每次 `todo_write` 写入后将执行计划同步输出为 markdown 文件：
+
+```markdown
+# 执行计划
+session: abc12345
+updated: 2026-05-22T15:30:00+08:00
+
+## 任务列表
+- [x] 创建目录结构
+- [>] 实现 main.go
+- [ ] 编写测试
+```
+
+- **Git 项目**写入 `{workDir}/.harness9/plans/`，纳入版本控制
+- 删除会话时自动级联清理 offload 文件，无磁盘残留
+
+详见 [文件系统能力技术方案](docs/核心功能/file-system.md)。
+
 ### 标准 ReAct 循环
 
 每个 Turn 执行一次 LLM 调用（携带完整工具列表），工具结果作为 Observation 注入上下文，驱动下一轮推理：
@@ -162,18 +197,19 @@ for evt := range stream {
 ## 核心模块
 
 
-| 模块           | 说明                                                                                      | 状态  |
-| ------------ | --------------------------------------------------------------------------------------- | --- |
-| **TUI**      | 全屏 TUI（Bubbletea）：双 Phase、流式输出、Spinner、Tab 补全、Token 用量实时展示                              | ✅   |
-| **Engine**   | 标准 ReAct 主循环，阻塞 + 流式双模式，EventTokenUpdate / EventCompaction 事件                           | ✅   |
-| **Planning** | Plan Mode（先规划后执行）、TodoStore、todo_write 工具、工具层权限过滤、自动续跑 + 停滞检测                          | ✅   |
-| **Memory**   | SQLiteSession（WAL）、SummarizationCompactor（默认，LLM 摘要）、TokenBudgetCompactor（回退）、孤立工具对双向修复 | ✅   |
-| **Context**  | System Prompt 结构化组装（基础 + AGENTS.md + Skills 索引）                                         | ✅   |
-| **Skills**   | Skills 解析、索引、按需加载（`use_skill` 工具）                                                       | ✅   |
-| **Provider** | LLM 统一接口，OpenAI / Anthropic 适配器，实际 token 用量提取                                           | ✅   |
-| **Schema**   | 跨组件共享的核心数据类型（Message、ToolCall、Usage 等）                                                  | ✅   |
-| **Tools**    | 工具注册表 + 内置工具（bash / read_file / write_file / edit_file）                                 | ✅   |
-| **Env**      | 零依赖 `.env` 配置加载器                                                                        | ✅   |
+| 模块             | 说明                                                                                      | 状态  |
+| -------------- | --------------------------------------------------------------------------------------- | --- |
+| **TUI**        | 全屏 TUI（Bubbletea）：双 Phase、流式输出、Spinner + 精确耗时、Tab 补全、Token 用量实时展示                      | ✅   |
+| **Engine**     | 标准 ReAct 主循环，阻塞 + 流式双模式，EventTokenUpdate / EventCompaction / EventToolResult（精确耗时）事件   | ✅   |
+| **Hooks**      | 工具拦截器：OffloadHook（超大输出 offload）+ FilePlanWriter（计划持久化）+ HookRegistry（洋葱模型）               | ✅   |
+| **Planning**   | Plan Mode（先规划后执行）、TodoStore、todo_write 工具、PlanWriter 接口、工具层权限过滤、自动续跑 + 停滞检测           | ✅   |
+| **Memory**     | SQLiteSession（WAL）、Manager（WithToolResultsDir + DeleteSession GC）、SummarizationCompactor（默认，LLM 摘要）、TokenBudgetCompactor（回退） | ✅   |
+| **Context**    | System Prompt 结构化组装（基础 + AGENTS.md + Skills 索引 + todo 指引 + offload 检索指引）                | ✅   |
+| **Skills**     | Skills 解析、索引、按需加载（`use_skill` 工具）                                                       | ✅   |
+| **Provider**   | LLM 统一接口，OpenAI / Anthropic 适配器，实际 token 用量提取                                           | ✅   |
+| **Schema**     | 跨组件共享的核心数据类型（Message、ToolCall、Usage 等）                                                  | ✅   |
+| **Tools**      | 工具注册表 + 内置工具（bash / read_file（offset/limit 分页）/ write_file / edit_file）                 | ✅   |
+| **Env**        | 零依赖 `.env` 配置加载器                                                                        | ✅   |
 
 
 ---
@@ -190,13 +226,14 @@ harness9/
 │   ├── tui_banner.go        # WelcomeBanner：HARNESS9 ASCII Art
 │   └── cli.go               # 交互式 CLI REPL 实现
 ├── internal/
-│   ├── engine/              # ReAct 主循环（Run + RunStream）
-│   ├── planning/            # PlanMode 枚举 + TodoStore（任务列表）
-│   ├── memory/              # Session 持久化 + Compactor 压缩策略
+│   ├── engine/              # ReAct 主循环（Run + RunStream + ToolResultData）
+│   ├── hooks/               # 工具拦截器（OffloadHook + FilePlanWriter + HookRegistry）
+│   ├── planning/            # PlanMode 枚举 + TodoStore + PlanWriter 接口
+│   ├── memory/              # Session 持久化 + Compactor 压缩策略 + DeleteSession GC
 │   ├── provider/            # OpenAI / Anthropic 适配器 + 模型限制注册表
 │   ├── schema/              # 共享数据类型（Message、StreamChunk、Usage）
-│   ├── tools/               # 工具注册表 + 内置工具 + 路径沙箱
-│   ├── context/             # System Prompt 组装（DefaultPromptBuilder）
+│   ├── tools/               # 工具注册表 + 内置工具（read_file 支持 offset/limit）+ 路径沙箱
+│   ├── context/             # System Prompt 组装（DefaultPromptBuilder + WithOffloadEnabled）
 │   ├── skills/              # Skills 解析、索引、use_skill 工具
 │   ├── env/                 # 零依赖 .env 加载器
 │   └── logfmt/              # 块状日志格式化
@@ -221,6 +258,7 @@ harness9/
 | [Tool Calling 工具调用系统](docs/核心功能/tool-calling.md)             | 工具接口、并发模型、内置工具详解、扩展指南                                   |
 | [Context Engineering 技术方案](docs/核心功能/context-engineering.md) | SQLiteSession、SummarizationCompactor、Token 估算、并发安全设计    |
 | [Planning 模块实现原理](docs/核心功能/planning.md)                      | Plan Mode、TodoStore、工具层权限控制、自动续跑、停滞检测、跨会话持久化            |
+| [文件系统能力技术方案](docs/核心功能/file-system.md)                         | OffloadHook、FilePlanWriter、read_file 分页、Session GC、Hooks 扩展 |
 | [AGENTS.md](AGENTS.md)                                       | 项目开发规范、编码标准、架构决策                                        |
 
 
