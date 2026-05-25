@@ -245,8 +245,25 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 // handleEvent 处理单个 engine.Event，返回更新后的模型和下一个 tea.Cmd。
 func (m tuiModel) handleEvent(evt engine.Event) (tea.Model, tea.Cmd) {
 	switch evt.Type {
+	case engine.EventThinkingDelta:
+		delta, _ := evt.Data.(string)
+		if m.thinkingLineStart == -1 {
+			// 首个 thinking delta：追加标题行并记录起始位置
+			m.lines = append(m.lines, thinkingHeaderStyle.Render("« thinking »"))
+			m.thinkingLineStart = len(m.lines) - 1
+		}
+		m.pendingThinking += delta
+		// 将 thinking 内容行覆写到 lines[thinkingLineStart+1:]
+		thinkingLines := renderThinkingLines(m.pendingThinking)
+		m.lines = append(m.lines[:m.thinkingLineStart+1], thinkingLines...)
+		return m, readNextEvent(m.eventCh)
+
 	case engine.EventActionDelta:
 		delta, _ := evt.Data.(string)
+		// 如果 thinking 块尚未结束，先 flush
+		if m.pendingThinking != "" {
+			m = m.flushPendingThinking()
+		}
 		m.pendingReply += delta
 		// 原始文本回写到 lines，等工具边界时用 glamour 统一渲染
 		rawLines := strings.Split(m.pendingReply, "\n")
@@ -254,6 +271,10 @@ func (m tuiModel) handleEvent(evt engine.Event) (tea.Model, tea.Cmd) {
 		return m, readNextEvent(m.eventCh)
 
 	case engine.EventToolStart:
+		// thinking 块 flush 必须在 flushPendingReply 之前，避免行索引错乱
+		if m.pendingThinking != "" {
+			m = m.flushPendingThinking()
+		}
 		// 工具启动前先渲染当前累积的文本块
 		m = m.flushPendingReply()
 		tc, _ := evt.Data.(schema.ToolCall)
@@ -312,6 +333,9 @@ func (m tuiModel) handleEvent(evt engine.Event) (tea.Model, tea.Cmd) {
 		return m, readNextEvent(m.eventCh)
 
 	case engine.EventDone:
+		if m.pendingThinking != "" {
+			m = m.flushPendingThinking()
+		}
 		// flushPendingReply 在这里调用，将流式累积的 Markdown 文本渲染到 lines。
 		m = m.flushPendingReply()
 		if m.cancelFn != nil {

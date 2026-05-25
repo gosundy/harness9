@@ -402,3 +402,85 @@ func TestScrollHeight_DynamicReservedLines(t *testing.T) {
 		t.Errorf("running with tool: want 20 (24-4), got %d", got)
 	}
 }
+
+func TestEventThinkingDelta_CreatesThinkingBlock(t *testing.T) {
+	m := newTestModel()
+	m.running = true
+
+	m = applyUpdate(m, eventMsg{Type: engine.EventThinkingDelta, Data: "step one"})
+
+	// 应该有 « thinking » 标题行
+	var hasHeader bool
+	for _, line := range m.lines {
+		if strings.Contains(line, "thinking") {
+			hasHeader = true
+			break
+		}
+	}
+	if !hasHeader {
+		t.Error("lines should contain thinking header after first EventThinkingDelta")
+	}
+	if m.thinkingLineStart == -1 {
+		t.Error("thinkingLineStart should be set after first EventThinkingDelta")
+	}
+	if m.pendingThinking != "step one" {
+		t.Errorf("pendingThinking = %q, want %q", m.pendingThinking, "step one")
+	}
+}
+
+func TestEventThinkingDelta_AccumulatesContent(t *testing.T) {
+	m := newTestModel()
+	m.running = true
+
+	m = applyUpdate(m, eventMsg{Type: engine.EventThinkingDelta, Data: "part one"})
+	m = applyUpdate(m, eventMsg{Type: engine.EventThinkingDelta, Data: " part two"})
+
+	if m.pendingThinking != "part one part two" {
+		t.Errorf("pendingThinking = %q, want %q", m.pendingThinking, "part one part two")
+	}
+}
+
+func TestEventActionDelta_FlushesThinkingBlock(t *testing.T) {
+	m := newTestModel()
+	m.running = true
+
+	// 先发 thinking delta
+	m = applyUpdate(m, eventMsg{Type: engine.EventThinkingDelta, Data: "reason"})
+	if m.thinkingLineStart == -1 {
+		t.Fatal("setup: thinkingLineStart should be set")
+	}
+
+	// 再发 action delta，应 flush thinking 块
+	m = applyUpdate(m, eventMsg{Type: engine.EventActionDelta, Data: "answer"})
+
+	if m.thinkingLineStart != -1 {
+		t.Error("thinkingLineStart should be reset to -1 after action delta flushes thinking")
+	}
+	if m.pendingThinking != "" {
+		t.Errorf("pendingThinking should be empty after flush, got %q", m.pendingThinking)
+	}
+	// action 文本应该在 lines 中
+	if m.pendingReply != "answer" {
+		t.Errorf("pendingReply = %q, want %q", m.pendingReply, "answer")
+	}
+}
+
+func TestEventToolStart_FlushesThinkingBlock(t *testing.T) {
+	m := newTestModel()
+	m.running = true
+
+	m = applyUpdate(m, eventMsg{Type: engine.EventThinkingDelta, Data: "reason"})
+	if m.thinkingLineStart == -1 {
+		t.Fatal("setup: thinkingLineStart should be set")
+	}
+
+	tc := schema.ToolCall{Name: "bash", ID: "1", Arguments: json.RawMessage(`{}`)}
+	m = applyUpdate(m, eventMsg{Type: engine.EventToolStart, Data: tc})
+
+	if m.thinkingLineStart != -1 {
+		t.Error("thinkingLineStart should be reset after EventToolStart flushes thinking")
+	}
+	if m.pendingThinking != "" {
+		t.Errorf("pendingThinking should be empty after flush, got %q", m.pendingThinking)
+	}
+}
