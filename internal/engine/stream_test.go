@@ -280,6 +280,7 @@ func TestRunStream_ToolResultDataIsToolResult(t *testing.T) {
 // thinkingProvider 是一个在流式响应中同时发送 thinking_delta 和 text_delta 的测试桩。
 type thinkingProvider struct{}
 
+// Generate 未在流式路径中使用，仅满足 LLMProvider 接口约束。
 func (p *thinkingProvider) Generate(_ context.Context, _ []schema.Message, _ []schema.ToolDefinition) (*schema.Message, *schema.Usage, error) {
 	return &schema.Message{Role: schema.RoleAssistant, Content: "result"}, nil, nil
 }
