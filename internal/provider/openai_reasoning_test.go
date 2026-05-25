@@ -12,6 +12,15 @@ func TestExtractReasoningContent_PresentField(t *testing.T) {
 	}
 }
 
+func TestExtractReasoningContent_ReasoningField(t *testing.T) {
+	// OpenRouter 为 OpenAI/gpt-5.x 等模型使用 delta.reasoning（无 _content 后缀）
+	raw := `{"choices":[{"delta":{"reasoning":"reasoning step"}}]}`
+	got := extractReasoningContent(raw)
+	if got != "reasoning step" {
+		t.Errorf("got %q, want %q", got, "reasoning step")
+	}
+}
+
 func TestExtractReasoningContent_AbsentField(t *testing.T) {
 	raw := `{"choices":[{"delta":{"content":"hello"}}]}`
 	got := extractReasoningContent(raw)

@@ -303,8 +303,16 @@ func convertToFunctionParameters(input interface{}) (shared.FunctionParameters, 
 	return params, nil
 }
 
-// extractReasoningContent 从 OpenAI 兼容流式 chunk 的原始 JSON 中提取 reasoning_content 字段。
-// DeepSeek-R1 等模型通过此字段在 delta 中暴露推理内容；标准 OpenAI 响应不含此字段，返回空字符串。
+// extractReasoningContent 从 OpenAI 兼容流式 chunk 的原始 JSON 中提取推理内容。
+//
+// 两种字段格式均支持：
+//   - choices.0.delta.reasoning_content — DeepSeek-R1 原生格式
+//   - choices.0.delta.reasoning         — OpenRouter 代理 OpenAI gpt-5.x 等模型的格式
+//
+// 标准 OpenAI 响应（无推理内容）返回空字符串，不产生副作用。
 func extractReasoningContent(rawJSON string) string {
-	return gjson.Get(rawJSON, "choices.0.delta.reasoning_content").String()
+	if rc := gjson.Get(rawJSON, "choices.0.delta.reasoning_content").String(); rc != "" {
+		return rc
+	}
+	return gjson.Get(rawJSON, "choices.0.delta.reasoning").String()
 }
