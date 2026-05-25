@@ -400,9 +400,15 @@ func (m tuiModel) handleEvent(evt engine.Event) (tea.Model, tea.Cmd) {
 
 	case engine.EventError:
 		errMsg, _ := evt.Data.(string)
-		// 丢弃未渲染的原始流式文本
-		m.lines = m.lines[:m.pendingReplyStart]
+		// 丢弃未渲染的流式缓冲（含 thinking 块）
+		if m.thinkingLineStart != -1 {
+			m.lines = m.lines[:m.thinkingLineStart]
+		} else {
+			m.lines = m.lines[:m.pendingReplyStart]
+		}
 		m.pendingReply = ""
+		m.pendingThinking = ""
+		m.thinkingLineStart = -1
 		if m.cancelFn != nil {
 			m.cancelFn()
 		}
