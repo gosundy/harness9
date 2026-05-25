@@ -504,3 +504,41 @@ func TestEventDone_FlushesActiveThinkingBlock(t *testing.T) {
 		t.Errorf("pendingThinking should be empty after EventDone flush, got %q", m.pendingThinking)
 	}
 }
+
+func TestThinkingWordWrap_ShortText(t *testing.T) {
+	lines := thinkingWordWrap("hello world", 80)
+	if len(lines) != 1 || lines[0] != "hello world" {
+		t.Errorf("short text should stay on one line, got %v", lines)
+	}
+}
+
+func TestThinkingWordWrap_LongText(t *testing.T) {
+	// 40 chars wide: "one two three four" each word ~5 chars
+	text := "alpha beta gamma delta epsilon zeta eta theta"
+	lines := thinkingWordWrap(text, 20)
+	if len(lines) < 2 {
+		t.Errorf("long text should wrap into multiple lines, got %v", lines)
+	}
+	for _, line := range lines {
+		if len([]rune(line)) > 20 {
+			t.Errorf("line exceeds width: %q (%d runes)", line, len([]rune(line)))
+		}
+	}
+}
+
+func TestThinkingWordWrap_ZeroWidth(t *testing.T) {
+	text := "no wrapping when width is zero"
+	lines := thinkingWordWrap(text, 0)
+	if len(lines) != 1 || lines[0] != text {
+		t.Errorf("zero width should not wrap, got %v", lines)
+	}
+}
+
+func TestRenderThinkingLines_WrapsAtWidth(t *testing.T) {
+	// width=40: prefix "  │ " = 4 cols, so wrap at 35 runes
+	longText := "I need to create a temporary directory for a new Go web project with no external dependencies"
+	lines := renderThinkingLines(longText, 40)
+	if len(lines) < 2 {
+		t.Errorf("expected wrapping into multiple lines at width=40, got %d line(s): %v", len(lines), lines)
+	}
+}

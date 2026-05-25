@@ -254,7 +254,7 @@ func (m tuiModel) handleEvent(evt engine.Event) (tea.Model, tea.Cmd) {
 		}
 		m.pendingThinking += delta
 		// 将 thinking 内容行覆写到 lines[thinkingLineStart+1:]
-		thinkingLines := renderThinkingLines(m.pendingThinking)
+		thinkingLines := renderThinkingLines(m.pendingThinking, m.width)
 		m.lines = append(m.lines[:m.thinkingLineStart+1], thinkingLines...)
 		return m, readNextEvent(m.eventCh)
 
@@ -596,14 +596,50 @@ func (m tuiModel) flushPendingReply() tuiModel {
 	return m
 }
 
-// renderThinkingLines 将推理文本按行拆分，每行加 "  │ " 前缀并应用暗色样式。
-func renderThinkingLines(text string) []string {
-	lines := strings.Split(text, "\n")
-	out := make([]string, len(lines))
-	for i, line := range lines {
-		out[i] = thinkingLineStyle.Render("  │ " + line)
+// renderThinkingLines 将推理文本按段落分割并在 width 内 word-wrap，每行加 "  │ " 前缀并应用暗色样式。
+// width 为终端列数（m.width）；0 时回退为不折行。
+func renderThinkingLines(text string, width int) []string {
+	const prefix = "  │ "
+	const prefixCols = 4 // "  │ " 占用的显示列数
+
+	wrapWidth := width - prefixCols - 1 // 右侧留 1 列边距
+	if wrapWidth < 20 {
+		wrapWidth = 0 // 终端过窄时不折行
+	}
+
+	var out []string
+	for _, para := range strings.Split(text, "\n") {
+		for _, line := range thinkingWordWrap(para, wrapWidth) {
+			out = append(out, thinkingLineStyle.Render(prefix+line))
+		}
+	}
+	if len(out) == 0 {
+		out = []string{thinkingLineStyle.Render(prefix)}
 	}
 	return out
+}
+
+// thinkingWordWrap 将 text 按 width rune 数折行，保留词边界。
+// width <= 0 时不折行，整段作为单行返回。
+func thinkingWordWrap(text string, width int) []string {
+	if width <= 0 || text == "" {
+		return []string{text}
+	}
+	words := strings.Fields(text)
+	if len(words) == 0 {
+		return []string{""}
+	}
+	var lines []string
+	line := words[0]
+	for _, word := range words[1:] {
+		if len([]rune(line))+1+len([]rune(word)) <= width {
+			line += " " + word
+		} else {
+			lines = append(lines, line)
+			line = word
+		}
+	}
+	return append(lines, line)
 }
 
 // flushPendingThinking 追加 thinking 块结束行，并重置 thinking 缓冲和行索引。
