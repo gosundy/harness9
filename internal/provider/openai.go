@@ -30,9 +30,24 @@ type OpenAIProvider struct {
 	client openai.Client
 	// model 模型标识符，如 "gpt-4o"、"openai/gpt-5.4-mini" 等，直接传递给 Chat Completion API。
 	model string
+	// includeReasoning 为 true 时在请求体中注入 include_reasoning=true，
+	// 用于 OpenRouter 等代理层将推理内容暴露在 delta.reasoning 字段中。
+	includeReasoning bool
 }
 
-func NewOpenAIProvider(model string) (*OpenAIProvider, error) {
+// OpenAIOption 是 OpenAIProvider 的功能选项类型。
+type OpenAIOption func(*OpenAIProvider)
+
+// WithIncludeReasoning 在每次请求中注入 include_reasoning=true，
+// 使 OpenRouter 在流式响应的 delta.reasoning 字段中返回推理内容。
+// 对不支持此参数的后端无副作用（参数被忽略）。
+func WithIncludeReasoning() OpenAIOption {
+	return func(p *OpenAIProvider) {
+		p.includeReasoning = true
+	}
+}
+
+func NewOpenAIProvider(model string, opts ...OpenAIOption) (*OpenAIProvider, error) {
 	apiKey := os.Getenv("OPENAI_API_KEY")
 	if apiKey == "" {
 		return nil, fmt.Errorf("请设置 OPENAI_API_KEY 环境变量")
@@ -42,10 +57,17 @@ func NewOpenAIProvider(model string) (*OpenAIProvider, error) {
 		return nil, fmt.Errorf("请设置 OPENAI_BASE_URL 环境变量")
 	}
 
-	return &OpenAIProvider{
+	p := &OpenAIProvider{
 		client: openai.NewClient(option.WithAPIKey(apiKey), option.WithBaseURL(baseURL)),
 		model:  model,
-	}, nil
+		// OpenRouter 需要 include_reasoning=true 才会在 delta.reasoning 中返回推理内容。
+		// 其他 OpenAI 兼容后端不含此参数时默认忽略，不产生副作用。
+		includeReasoning: strings.Contains(baseURL, "openrouter"),
+	}
+	for _, opt := range opts {
+		opt(p)
+	}
+	return p, nil
 }
 
 // Generate 实现 LLMProvider 接口的阻塞式调用。
@@ -66,7 +88,12 @@ func (p *OpenAIProvider) Generate(ctx context.Context, msgs []schema.Message, av
 		reqParams.Tools = openaiTools
 	}
 
-	resp, err := p.client.Chat.Completions.New(ctx, reqParams)
+	var reqOpts []option.RequestOption
+	if p.includeReasoning {
+		reqOpts = append(reqOpts, option.WithJSONSet("include_reasoning", true))
+	}
+
+	resp, err := p.client.Chat.Completions.New(ctx, reqParams, reqOpts...)
 	if err != nil {
 		return nil, nil, fmt.Errorf("OpenAI 兼容 API 请求失败: %w", err)
 	}
@@ -104,7 +131,12 @@ func (p *OpenAIProvider) GenerateStream(ctx context.Context, msgs []schema.Messa
 		reqParams.Tools = openaiTools
 	}
 
-	stream := p.client.Chat.Completions.NewStreaming(ctx, reqParams)
+	var streamOpts []option.RequestOption
+	if p.includeReasoning {
+		streamOpts = append(streamOpts, option.WithJSONSet("include_reasoning", true))
+	}
+
+	stream := p.client.Chat.Completions.NewStreaming(ctx, reqParams, streamOpts...)
 
 	ch := make(chan schema.StreamChunk)
 	go func() {
