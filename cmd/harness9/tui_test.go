@@ -484,3 +484,23 @@ func TestEventToolStart_FlushesThinkingBlock(t *testing.T) {
 		t.Errorf("pendingThinking should be empty after flush, got %q", m.pendingThinking)
 	}
 }
+
+func TestEventDone_FlushesActiveThinkingBlock(t *testing.T) {
+	m := newTestModel()
+	m.running = true
+	m.cancelFn = func() {}
+
+	m = applyUpdate(m, eventMsg{Type: engine.EventThinkingDelta, Data: "reason"})
+	if m.thinkingLineStart == -1 {
+		t.Fatal("setup: thinkingLineStart should be set")
+	}
+
+	m = applyUpdate(m, eventMsg{Type: engine.EventDone})
+
+	if m.thinkingLineStart != -1 {
+		t.Error("EventDone should flush thinking block (thinkingLineStart reset to -1)")
+	}
+	if m.pendingThinking != "" {
+		t.Errorf("pendingThinking should be empty after EventDone flush, got %q", m.pendingThinking)
+	}
+}
