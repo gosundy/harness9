@@ -620,6 +620,7 @@ func renderThinkingLines(text string, width int) []string {
 }
 
 // thinkingWordWrap 将 text 按 width rune 数折行，保留词边界。
+// 超过 width 的单个词（如 URL）会被强制截断，避免溢出终端宽度。
 // width <= 0 时不折行，整段作为单行返回。
 func thinkingWordWrap(text string, width int) []string {
 	if width <= 0 || text == "" {
@@ -629,15 +630,41 @@ func thinkingWordWrap(text string, width int) []string {
 	if len(words) == 0 {
 		return []string{""}
 	}
+
+	// hardBreak 将超长词按 width 强制截断为多段。
+	hardBreak := func(word string) []string {
+		runes := []rune(word)
+		var chunks []string
+		for len(runes) > width {
+			chunks = append(chunks, string(runes[:width]))
+			runes = runes[width:]
+		}
+		return append(chunks, string(runes))
+	}
+
 	var lines []string
 	line := words[0]
 	for _, word := range words[1:] {
 		if len([]rune(line))+1+len([]rune(word)) <= width {
 			line += " " + word
 		} else {
-			lines = append(lines, line)
-			line = word
+			// 当前行满，先将超长单词硬截断再追加。
+			if len([]rune(word)) > width {
+				lines = append(lines, line)
+				chunks := hardBreak(word)
+				lines = append(lines, chunks[:len(chunks)-1]...)
+				line = chunks[len(chunks)-1]
+			} else {
+				lines = append(lines, line)
+				line = word
+			}
 		}
+	}
+	// 最后一行也需检查是否超长。
+	if len([]rune(line)) > width {
+		chunks := hardBreak(line)
+		lines = append(lines, chunks[:len(chunks)-1]...)
+		line = chunks[len(chunks)-1]
 	}
 	return append(lines, line)
 }

@@ -1,7 +1,6 @@
 package provider
 
 import (
-	"strings"
 	"testing"
 )
 
@@ -14,10 +13,26 @@ func TestWithIncludeReasoning_SetsField(t *testing.T) {
 }
 
 func TestWithIncludeReasoning_AutoDetectOpenRouter(t *testing.T) {
-	// OpenRouter base URL 应自动启用 includeReasoning
-	p := &OpenAIProvider{includeReasoning: strings.Contains("https://openrouter.ai/api/v1", "openrouter")}
+	t.Setenv("OPENAI_API_KEY", "test-key")
+	t.Setenv("OPENAI_BASE_URL", "https://openrouter.ai/api/v1")
+	p, err := NewOpenAIProvider("gpt-4o")
+	if err != nil {
+		t.Fatalf("NewOpenAIProvider: %v", err)
+	}
 	if !p.includeReasoning {
 		t.Error("OpenRouter base URL should auto-enable includeReasoning")
+	}
+}
+
+func TestWithIncludeReasoning_NonOpenRouterDisabled(t *testing.T) {
+	t.Setenv("OPENAI_API_KEY", "test-key")
+	t.Setenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
+	p, err := NewOpenAIProvider("gpt-4o")
+	if err != nil {
+		t.Fatalf("NewOpenAIProvider: %v", err)
+	}
+	if p.includeReasoning {
+		t.Error("non-OpenRouter base URL should not auto-enable includeReasoning")
 	}
 }
 

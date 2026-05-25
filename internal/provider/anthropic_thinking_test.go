@@ -19,3 +19,13 @@ func TestWithThinkingBudget_ZeroDisables(t *testing.T) {
 		t.Errorf("thinkingBudget should be 0 after WithThinkingBudget(0), got %d", p.thinkingBudget)
 	}
 }
+
+func TestWithThinkingBudget_ClampsToMinimum(t *testing.T) {
+	for _, budget := range []int64{1, 100, 1023} {
+		p := &AnthropicProvider{}
+		WithThinkingBudget(budget)(p)
+		if p.thinkingBudget != 1024 {
+			t.Errorf("budget %d should be clamped to 1024, got %d", budget, p.thinkingBudget)
+		}
+	}
+}

@@ -43,8 +43,12 @@ type AnthropicOption func(*AnthropicProvider)
 
 // WithThinkingBudget 启用 Anthropic extended thinking，并设置推理 token 预算上限。
 // budget 为 0 时禁用 extended thinking。
+// Anthropic API 要求 budget_tokens ≥ 1024，小于该值时自动提升到 1024。
 func WithThinkingBudget(budget int64) AnthropicOption {
 	return func(p *AnthropicProvider) {
+		if budget > 0 && budget < 1024 {
+			budget = 1024
+		}
 		p.thinkingBudget = budget
 	}
 }
