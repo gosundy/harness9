@@ -566,6 +566,29 @@ func (m tuiModel) flushPendingReply() tuiModel {
 	return m
 }
 
+// renderThinkingLines 将推理文本按行拆分，每行加 "  │ " 前缀并应用暗色样式。
+func renderThinkingLines(text string) []string {
+	lines := strings.Split(text, "\n")
+	out := make([]string, len(lines))
+	for i, line := range lines {
+		out[i] = thinkingLineStyle.Render("  │ " + line)
+	}
+	return out
+}
+
+// flushPendingThinking 追加 thinking 块结束行，并重置 thinking 缓冲和行索引。
+// 调用后 pendingReplyStart 更新为当前 lines 长度，后续 action 文本从此处开始。
+func (m tuiModel) flushPendingThinking() tuiModel {
+	if m.pendingThinking == "" {
+		return m
+	}
+	m.lines = append(m.lines, thinkingEndStyle.Render("  └ ──────────────────────────────"))
+	m.pendingThinking = ""
+	m.thinkingLineStart = -1
+	m.pendingReplyStart = len(m.lines)
+	return m
+}
+
 // renderMD 通过 glamour 将 Markdown 文本渲染为终端 ANSI 格式。
 // 降级策略：任何错误均原样返回原文。
 //
@@ -650,6 +673,8 @@ func (m tuiModel) dispatch(prompt string) (tuiModel, tea.Cmd) {
 	m.lines = append(m.lines, assistantStyle.Render("◆ harness9:"), "")
 	m.pendingReplyStart = len(m.lines) - 1
 	m.pendingReply = ""
+	m.thinkingLineStart = -1
+	m.pendingThinking = ""
 
 	ctx, cancel := context.WithCancel(m.outerCtx)
 	m.cancelFn = cancel
