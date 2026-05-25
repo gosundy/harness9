@@ -7,6 +7,8 @@ import (
 	"os"
 	"strings"
 
+	"github.com/tidwall/gjson"
+
 	"github.com/harness9/internal/schema"
 	"github.com/openai/openai-go/v3"
 	"github.com/openai/openai-go/v3/option"
@@ -125,6 +127,16 @@ func (p *OpenAIProvider) GenerateStream(ctx context.Context, msgs []schema.Messa
 
 			if len(chunk.Choices) == 0 {
 				continue
+			}
+
+			// 提取 reasoning_content（DeepSeek-R1 等模型通过此字段暴露推理内容）。
+			if rc := extractReasoningContent(chunk.RawJSON()); rc != "" {
+				if !sendStreamChunk(ctx, ch, schema.StreamChunk{
+					Type:  schema.StreamChunkThinkingDelta,
+					Delta: rc,
+				}) {
+					return
+				}
 			}
 
 			delta := chunk.Choices[0].Delta
@@ -289,4 +301,10 @@ func convertToFunctionParameters(input interface{}) (shared.FunctionParameters, 
 		return nil, fmt.Errorf("unmarshal input schema: %w", err)
 	}
 	return params, nil
+}
+
+// extractReasoningContent 从 OpenAI 兼容流式 chunk 的原始 JSON 中提取 reasoning_content 字段。
+// DeepSeek-R1 等模型通过此字段在 delta 中暴露推理内容；标准 OpenAI 响应不含此字段，返回空字符串。
+func extractReasoningContent(rawJSON string) string {
+	return gjson.Get(rawJSON, "choices.0.delta.reasoning_content").String()
 }
