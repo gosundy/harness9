@@ -48,7 +48,7 @@ features:
 
 ## 架构总览
 
-![harness9 整体架构图](/harness9/harness9_architecture.png)
+![harness9 整体架构图](/harness9_architecture.png)
 
 ---
 
