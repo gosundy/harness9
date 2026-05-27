@@ -1,4 +1,3 @@
-// DangerHook：内置高危命令拦截器。
 package hooks
 
 import (

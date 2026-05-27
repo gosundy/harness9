@@ -151,6 +151,10 @@ func LoadRules(path string) (*Rules, error) {
 }
 
 // SaveRules 将当前规则集写回 JSON 配置文件（覆写）。
+// 用于"总是允许"动态更新白名单。
+//
+// 注意：序列化后重新加载时，规则顺序重置为 deny→allow→ask（LoadRules 固定顺序），
+// 与原始插入顺序无关。若业务逻辑依赖精确的跨类型顺序，应避免使用 SaveRules 后再 LoadRules。
 func SaveRules(path string, r *Rules) error {
 	cfg := configFile{}
 	for _, ru := range r.rules {

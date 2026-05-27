@@ -49,6 +49,11 @@ const (
 
 	// EventApprovalRequired 表示工具执行需要人类审批。Data 类型为 ApprovalRequest。
 	// 引擎在工具执行前发出此事件，同时工具 goroutine 阻塞在 ApprovalRequest.ResponseCh 等待回复。
+	//
+	// 并发工具调用时，多个工具 goroutine 可能同时请求审批。由于 Event channel 是无缓冲的，
+	// 第二个审批请求会阻塞在 ch <- Event 直到 TUI 处理完第一个请求并恢复读取。
+	// TUI 实现必须在展示审批对话框期间继续消费 Event channel（不可直接 select 等待 ResponseCh），
+	// 否则多工具场景下会发生死锁。
 	EventApprovalRequired EventType = "approval_required"
 )
 
