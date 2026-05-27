@@ -251,6 +251,9 @@ type tuiModel struct {
 	approvalFeedback  string
 	approvalInputting bool
 	settingsPath      string
+
+	// permMode 是引擎的全局权限策略，影响状态栏显示和审批行为。
+	permMode engine.PermissionMode
 }
 
 // pendingToolInfo 记录单个并发工具调用的启动信息，用于 EventToolResult 时精确还原名称和参数。

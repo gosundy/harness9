@@ -8,6 +8,7 @@ import (
 
 	"github.com/charmbracelet/lipgloss"
 
+	"github.com/harness9/internal/engine"
 	"github.com/harness9/internal/memory"
 	"github.com/harness9/internal/planning"
 )
@@ -218,6 +219,9 @@ func (m tuiModel) renderStatusBar() string {
 		modePart = dimStyle.Render("  │  ") + shellModeLabelInBarStyle.Render("SHELL")
 	} else if modeLabel != "" {
 		modePart = dimStyle.Render("  │  ") + planModeLabelStyle.Render(modeLabel)
+	}
+	if m.permMode != engine.PermissionModeDefault {
+		modePart += dimStyle.Render("  │  ") + approvalTitleMedStyle.Render(m.permMode.String())
 	}
 
 	var tasksPart string

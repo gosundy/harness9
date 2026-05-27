@@ -113,6 +113,7 @@ type AgentEngine struct {
 	compactor          memory.Compactor    // 可选，nil 表示不压缩
 	planMode           planning.PlanMode   // 当前执行模式，影响工具过滤
 	todoStore          *planning.TodoStore // 可选，nil 表示无 planning
+	permissionMode     PermissionMode      // 全局权限策略，影响审批行为
 }
 
 // NewAgentEngine 创建新的 AgentEngine。默认值：maxTurns=50, toolTimeout=60s。

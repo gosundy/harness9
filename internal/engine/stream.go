@@ -162,6 +162,9 @@ func (e *AgentEngine) RunStream(ctx context.Context, userPrompt string) (<-chan 
 				sendEvent(ctx, ch, Event{Type: EventCompaction, Data: data})
 			},
 			approval: func(ctx context.Context, tc schema.ToolCall, reason, riskLevel string) hooks.ApprovalResponse {
+				if e.permissionMode == PermissionModeBypassAll {
+					return hooks.ApprovalResponse{Approved: true}
+				}
 				respCh := make(chan hooks.ApprovalResponse, 1)
 				req := ApprovalRequest{
 					ToolCall:   tc,
