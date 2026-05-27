@@ -131,12 +131,8 @@ func main() {
 	dangerHook := hooks.NewDangerHook()
 
 	settingsPath := filepath.Join(workDir, ".harness9", "settings.json")
-	permRules, permErr := permission.LoadRules(settingsPath)
-	if permErr != nil {
-		log.Print(logfmt.FormatMsg("main", fmt.Sprintf("加载权限配置失败（使用空规则）: %v", permErr)))
-		permRules = permission.NewRules()
-	}
-	permHook := permission.NewHook(permRules)
+	// NewFileHook 每次工具调用时从磁盘重新读取规则，确保 TUI 写入白名单后下次调用立即生效。
+	permHook := permission.NewFileHook(settingsPath)
 
 	// Hook 执行顺序：PermissionHook（配置规则）→ DangerHook（内置模式）→ OffloadHook（大输出）
 	hookReg := hooks.NewHookRegistry(registry, permHook, dangerHook, offloadHook)

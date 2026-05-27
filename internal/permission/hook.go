@@ -10,19 +10,38 @@ import (
 )
 
 // Hook 是基于 Rules 的 ToolHook 实现。
+// settingsPath 非空时每次 BeforeExecute 从磁盘重新加载规则，确保 writeApprovalToConfig 写入后立即生效。
 type Hook struct {
-	rules *Rules
+	rules        *Rules
+	settingsPath string
 }
 
-// NewHook 创建基于给定规则集的 PermissionHook。
+// NewHook 创建基于内存规则集的 PermissionHook（用于测试）。
 func NewHook(rules *Rules) *Hook {
 	return &Hook{rules: rules}
 }
 
+// NewFileHook 创建从文件按需加载规则的 PermissionHook。
+// 每次工具调用时重新读取文件，使 writeApprovalToConfig 写入的白名单立即生效。
+func NewFileHook(settingsPath string) *Hook {
+	return &Hook{settingsPath: settingsPath}
+}
+
 // BeforeExecute 评估工具调用并返回对应 HookDecision。
 func (h *Hook) BeforeExecute(ctx context.Context, tc schema.ToolCall) (context.Context, hooks.HookDecision, error) {
+	rules := h.rules
+	if h.settingsPath != "" {
+		if loaded, err := LoadRules(h.settingsPath); err == nil {
+			rules = loaded
+		} else if rules == nil {
+			rules = NewRules()
+		}
+	}
+	if rules == nil {
+		rules = NewRules()
+	}
 	argStr := extractArgString(tc)
-	action := h.rules.Evaluate(tc.Name, argStr)
+	action := rules.Evaluate(tc.Name, argStr)
 	switch action {
 	case RuleDeny:
 		return ctx, hooks.Deny(fmt.Sprintf("工具 %s 被权限规则拒绝", tc.Name)), nil
