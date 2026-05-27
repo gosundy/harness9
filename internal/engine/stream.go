@@ -161,7 +161,12 @@ func (e *AgentEngine) RunStream(ctx context.Context, userPrompt string) (<-chan 
 			compaction: func(data CompactionData) {
 				sendEvent(ctx, ch, Event{Type: EventCompaction, Data: data})
 			},
-			approval: func(ctx context.Context, tc schema.ToolCall, reason, riskLevel string) hooks.ApprovalResponse {
+			// 审批等待使用会话级 ctx（RunStream 的外层 ctx），不受工具执行超时约束。
+			// 工具超时（toolTimeout）仅应限制工具本身的计算时间，而非人类决策时间：
+			// 若用 toolCtx（含 60s 超时）等待 respCh，用户超时未响应时工具会被自动拒绝，
+			// 且 TUI 端 ResponseCh 不再被读取，导致工具 goroutine 在发送时短暂挂起。
+			// 参数 _ context.Context 为 toolCtx，此处故意忽略，使用外层 ctx。
+			approval: func(_ context.Context, tc schema.ToolCall, reason, riskLevel string) hooks.ApprovalResponse {
 				if e.permissionMode == PermissionModeBypassAll {
 					return hooks.ApprovalResponse{Approved: true}
 				}

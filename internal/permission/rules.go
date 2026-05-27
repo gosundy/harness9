@@ -86,25 +86,25 @@ func globContains(s, glob string) bool {
 	if !strings.ContainsAny(glob, "*?[") {
 		return strings.Contains(s, glob)
 	}
-	// Trailing-star shortcut: "prefix *" matches anything starting with "prefix "
+	// 尾部星号快捷路径：形如 "prefix*" 的 glob 直接用前缀匹配，避免调用 filepath.Match
 	if strings.HasSuffix(glob, "*") && !strings.ContainsAny(glob[:len(glob)-1], "*?[") {
 		prefix := glob[:len(glob)-1]
 		if strings.HasPrefix(s, prefix) {
 			return true
 		}
 	}
-	// Leading-star shortcut: "* suffix" matches anything ending with "suffix"
+	// 头部星号快捷路径：形如 "*suffix" 的 glob 直接用后缀匹配
 	if strings.HasPrefix(glob, "*") && !strings.ContainsAny(glob[1:], "*?[") {
 		suffix := glob[1:]
 		if strings.HasSuffix(s, suffix) {
 			return true
 		}
 	}
-	// Full-string filepath.Match
+	// 全串 filepath.Match（处理 *word* 等含通配符模式）
 	if matched, _ := filepath.Match(glob, s); matched {
 		return true
 	}
-	// Per-word filepath.Match (handles glob patterns against individual tokens)
+	// 逐词 filepath.Match（将 glob 与参数字符串的每个单词分别匹配）
 	for _, word := range strings.Fields(s) {
 		if matched, _ := filepath.Match(glob, word); matched {
 			return true
