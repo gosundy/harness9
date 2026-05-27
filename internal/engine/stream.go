@@ -12,6 +12,7 @@ import (
 	"log"
 	"time"
 
+	"github.com/harness9/internal/hooks"
 	"github.com/harness9/internal/logfmt"
 	"github.com/harness9/internal/schema"
 )
@@ -45,6 +46,10 @@ const (
 	// EventCompaction 在上下文发生有效压缩时发出（token 数减少 > 5%）。
 	// Data 类型为 CompactionData。
 	EventCompaction EventType = "compaction"
+
+	// EventApprovalRequired 表示工具执行需要人类审批。Data 类型为 ApprovalRequest。
+	// 引擎在工具执行前发出此事件，同时工具 goroutine 阻塞在 ApprovalRequest.ResponseCh 等待回复。
+	EventApprovalRequired EventType = "approval_required"
 )
 
 // Event 是引擎面向客户端的流式事件单元。RunStream 返回 <-chan Event，
@@ -101,6 +106,15 @@ type CompactionData struct {
 	MsgsAfter int `json:"msgs_after"`
 }
 
+// ApprovalRequest 是 EventApprovalRequired 的事件载荷。
+// 引擎 goroutine 通过 ResponseCh 阻塞等待 TUI（或其他消费者）的审批决策。
+type ApprovalRequest struct {
+	ToolCall   schema.ToolCall
+	Reason     string
+	RiskLevel  string
+	ResponseCh chan hooks.ApprovalResponse
+}
+
 // sendEvent 向 Event channel 发送事件，同时感知 context 取消。
 // 返回 false 表示 context 已取消，调用方应立即退出。
 // 终止事件（EventDone / EventError）应使用直接 ch <- 而非本函数，以确保消费者收到。
@@ -141,6 +155,26 @@ func (e *AgentEngine) RunStream(ctx context.Context, userPrompt string) (<-chan 
 			},
 			compaction: func(data CompactionData) {
 				sendEvent(ctx, ch, Event{Type: EventCompaction, Data: data})
+			},
+			approval: func(ctx context.Context, tc schema.ToolCall, reason, riskLevel string) hooks.ApprovalResponse {
+				respCh := make(chan hooks.ApprovalResponse, 1)
+				req := ApprovalRequest{
+					ToolCall:   tc,
+					Reason:     reason,
+					RiskLevel:  riskLevel,
+					ResponseCh: respCh,
+				}
+				select {
+				case <-ctx.Done():
+					return hooks.ApprovalResponse{Approved: false}
+				case ch <- Event{Type: EventApprovalRequired, Data: req}:
+				}
+				select {
+				case <-ctx.Done():
+					return hooks.ApprovalResponse{Approved: false}
+				case resp := <-respCh:
+					return resp
+				}
 			},
 		}
 
