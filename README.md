@@ -318,12 +318,15 @@ harness9/
 ## 对标框架
 
 
-| 框架                | 与 harness9 的差异                                    |
-| ----------------- | ------------------------------------------------- |
-| Claude Agent SDK  | 官方 SDK，仅支持 Anthropic；harness9 多 Provider，Go 原生    |
-| OpenAI Agents SDK | Python，Handoffs 多 Agent；harness9 Go 原生单 Agent，更轻量 |
-| OpenHarness       | Python；harness9 Go 原生                             |
-| OpenCode          | TypeScript；harness9 标准 ReAct，Go 原生                |
+| 框架 | 来源 | 与 harness9 的差异 |
+| --- | --- | --- |
+| DeepAgents | LangChain | Python，图编排（LangGraph StateGraph）；harness9 显式 ReAct 循环，无图引擎依赖，Go 原生 |
+| OpenHarness | HKUDS | Python，asyncio 并发；harness9 goroutine 并发模型，Go 原生 |
+| OpenCode | Anomaly | TypeScript，委托 Vercel AI SDK streamText，放弃循环控制权；harness9 自持显式循环，对内核有完全控制权 |
+| OpenClaw | OpenClaw | TypeScript，多代理路由，委托 AI SDK；harness9 Go 原生单 Agent，聚焦单体 ReAct |
+| HermesAgent | NousResearch | Python，ThreadPool 并发工具，三级上下文压缩；harness9 goroutine 并发，更轻量 |
+| Claude Agent SDK | Anthropic | 官方 SDK，仅支持 Anthropic，黑盒循环；harness9 多 Provider，透明可控的显式循环，Go 原生 |
+| OpenAI Agent SDK | OpenAI | Python，Handoffs 多 Agent，依赖 OpenAI Compaction API；harness9 Go 原生，自持压缩，无云 API 依赖 |
 
 
 ---
