@@ -50,6 +50,31 @@ func main() {
 	}
 
 	versionMode := flag.Bool("version", false, "打印版本号并退出")
+	flag.Usage = func() {
+		fmt.Print(`harness9 — 轻量级 AI Agent Harness 框架
+
+用法:
+  harness9 [flags]
+  harness9 <command>
+
+Flags:
+  --version   打印版本号并退出
+  --help      打印此帮助信息并退出
+
+命令:
+  upgrade     升级 harness9 到最新版本
+
+环境变量:
+  LLM_MODEL        模型名称（默认: openai/gpt-4o-mini）
+  OPENAI_API_KEY   OpenAI 兼容 API Key（必填）
+  OPENAI_BASE_URL  自定义 API 地址（可选，用于 OpenRouter / Azure 等）
+
+示例:
+  harness9                  启动（TTY 自动进入 TUI，管道模式退回 CLI REPL）
+  harness9 --version        查看版本号
+  harness9 upgrade          升级到最新版本
+`)
+	}
 	flag.Parse()
 
 	if *versionMode {

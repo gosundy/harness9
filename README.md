@@ -35,6 +35,12 @@ export OPENAI_API_KEY="sk-..."
 
 # 进入你的项目目录并启动
 cd /your/project && harness9
+
+# 查看所有 CLI 参数与说明
+harness9 --help
+
+# 查看版本号
+harness9 --version
 ```
 
 > 完整安装选项、Anthropic/OpenRouter 配置、AGENTS.md 设置和常见问题，见 [快速启动指南](docs/核心功能/quick_start.md)。

@@ -33,6 +33,7 @@ export default defineConfig({
             { text: 'Tool Calling', link: '/docs/tool-calling' },
             { text: 'Context Engineering', link: '/docs/context-engineering' },
             { text: 'Planning 模块', link: '/docs/planning' },
+            { text: 'Human-in-the-Loop', link: '/docs/human-in-the-loop' },
             { text: 'Agent Skills', link: '/docs/agent-skills' },
             { text: '文件系统能力', link: '/docs/file-system' },
             { text: 'CLI 使用指南', link: '/docs/cli' },
