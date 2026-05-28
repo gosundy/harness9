@@ -35,7 +35,17 @@ fi
 # 根据路径规则确定同步目标
 TARGET=""
 
-if [[ "$FILE_PATH" == "$PROJECT_ROOT/docs/"* ]]; then
+if [[ "$FILE_PATH" == "$PROJECT_ROOT/website/blog/"* ]]; then
+    # website/blog/<slug>/index.md -> vault/技术博客/<slug>.md
+    SLUG=$(basename "$(dirname "$FILE_PATH")")
+    FILENAME=$(basename "$FILE_PATH")
+    if [[ "$FILENAME" == "index.md" && "$SLUG" != "blog" ]]; then
+        TARGET="$OBSIDIAN_VAULT/技术博客/${SLUG}.md"
+    else
+        TARGET="$OBSIDIAN_VAULT/技术博客/$FILENAME"
+    fi
+
+elif [[ "$FILE_PATH" == "$PROJECT_ROOT/docs/"* ]]; then
     # docs/核心功能/ -> vault/核心功能/
     # docs/技术调研/ -> vault/技术调研/
     REL="${FILE_PATH#$PROJECT_ROOT/docs/}"

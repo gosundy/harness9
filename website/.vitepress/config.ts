@@ -9,6 +9,7 @@ export default defineConfig({
     nav: [
       { text: '首页', link: '/' },
       { text: '文档', link: '/docs/quick-start' },
+      { text: '博客', link: '/blog/' },
       {
         text: 'GitHub',
         link: 'https://github.com/ZhangShenao/harness9',
@@ -35,6 +36,15 @@ export default defineConfig({
             { text: 'Agent Skills', link: '/docs/agent-skills' },
             { text: '文件系统能力', link: '/docs/file-system' },
             { text: 'CLI 使用指南', link: '/docs/cli' },
+          ],
+        },
+      ],
+      '/blog/': [
+        {
+          text: '技术博客',
+          items: [
+            { text: '所有文章', link: '/blog/' },
+            { text: 'Agent Loop — 500 行 Go 代码驱动的生产级 ReAct 主循环', link: '/blog/agent-loop/' },
           ],
         },
       ],
