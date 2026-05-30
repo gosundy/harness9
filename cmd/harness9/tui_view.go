@@ -11,6 +11,8 @@ import (
 	"github.com/harness9/internal/engine"
 	"github.com/harness9/internal/memory"
 	"github.com/harness9/internal/planning"
+	"github.com/harness9/internal/schema"
+	"github.com/harness9/internal/subagent"
 )
 
 // accentStyle 返回当前执行模式对应的强调色样式（accent style）。
@@ -251,10 +253,21 @@ func (m tuiModel) renderStatusBar() string {
 		}
 	}
 
+	// bgTasksPart 在存在后台子代理任务时展示 "⚙ {运行} 运行/{完成} 完成" 指示段，
+	// 提示用户可用 Ctrl+T / /tasks 打开任务面板查看详情。
+	var bgTasksPart string
+	if m.subAgentTracker != nil {
+		if r, d := m.subAgentTracker.RunningCount(), m.subAgentTracker.DoneCount(); r > 0 || d > 0 {
+			bgTasksPart = dimStyle.Render("  │  ") +
+				accent.Render(fmt.Sprintf("⚙ %d 运行/%d 完成", r, d))
+		}
+	}
+
 	content := dimStyle.Render("  model: ") +
 		accent.Render(m.modelName) +
 		modePart +
 		tasksPart +
+		bgTasksPart +
 		dimStyle.Render("  │  ") +
 		accent.Render(shortPath(m.workDir)) +
 		sessionInfo
@@ -289,6 +302,85 @@ func (m tuiModel) renderPlanReviewDialog() string {
 	sb.WriteString(dimStyle.Render("↑↓ 移动  Enter 确认  Esc 取消"))
 
 	return planReviewBoxStyle.Render(sb.String())
+}
+
+// renderTaskPanel 渲染后台任务面板：taskDetailID 为空渲染列表，否则渲染该任务详情日志。
+func (m tuiModel) renderTaskPanel() string {
+	var sb strings.Builder
+	if m.subAgentTracker == nil {
+		return "（无任务）"
+	}
+	if m.taskDetailID == "" {
+		sb.WriteString(m.accentStyle().Render("后台子代理任务  （↑↓ 选择，Enter 查看，Esc 关闭）") + "\n\n")
+		list := m.subAgentTracker.List()
+		if len(list) == 0 {
+			sb.WriteString(dimStyle.Render("  暂无后台任务") + "\n")
+		}
+		for i, s := range list {
+			icon := "●"
+			switch s.State {
+			case subagent.TaskDone:
+				icon = "✓"
+			case subagent.TaskFailed:
+				icon = "✗"
+			}
+			row := fmt.Sprintf("%s %s  %s  \"%s\"", icon, s.AgentName, s.State.String(), truncateUTF8(s.Prompt, 48))
+			if i == m.taskPanelCursor {
+				sb.WriteString(userMsgStyle.Render("▶ "+row) + "\n")
+			} else {
+				sb.WriteString("  " + dimStyle.Render(row) + "\n")
+			}
+		}
+		return sb.String()
+	}
+	d, ok := m.subAgentTracker.Get(m.taskDetailID)
+	if !ok {
+		return "（任务已不存在，Esc 返回）"
+	}
+	sb.WriteString(m.accentStyle().Render(fmt.Sprintf("%s — %s  （↑↓ 滚动，Esc 返回）", d.AgentName, d.State.String())) + "\n\n")
+	lines := formatTaskLog(d)
+	start := m.taskDetailScroll
+	if start > len(lines) {
+		start = len(lines)
+	}
+	for _, ln := range lines[start:] {
+		sb.WriteString(ln + "\n")
+	}
+	return sb.String()
+}
+
+// formatTaskLog 把任务全过程日志格式化为展示行（与 subAgentLines 风格一致）。
+func formatTaskLog(d subagent.TaskDetail) []string {
+	var out []string
+	for _, u := range d.Log {
+		switch u.Kind {
+		case schema.SubAgentStart:
+			out = append(out, subAgentLineStyle.Render("启动…"))
+		case schema.SubAgentToolStart:
+			line := "▸ " + u.ToolName
+			if a := strings.TrimSpace(u.Text); a != "" && a != "{}" {
+				line += "(" + truncateUTF8(a, 80) + ")"
+			}
+			out = append(out, subAgentLineStyle.Render(line))
+		case schema.SubAgentDelta:
+			if s := strings.TrimSpace(u.Text); s != "" {
+				out = append(out, subAgentLineStyle.Render(s))
+			}
+		case schema.SubAgentToolResult:
+			if u.IsError {
+				out = append(out, subAgentLineStyle.Render("  ✗ 工具执行失败"))
+			}
+		case schema.SubAgentError:
+			out = append(out, subAgentLineStyle.Render("✗ "+u.Text))
+		}
+	}
+	if d.State != subagent.TaskRunning && d.FinalText != "" {
+		out = append(out, "", subAgentLineStyle.Render("— 最终结果 —"))
+		for _, ln := range strings.Split(strings.TrimRight(d.FinalText, "\n"), "\n") {
+			out = append(out, subAgentLineStyle.Render(ln))
+		}
+	}
+	return out
 }
 
 // renderInput 渲染底部输入行，根据当前模式切换提示符样式。
@@ -459,6 +551,12 @@ func (m tuiModel) View() string {
 		}
 		if m.planReviewing {
 			sb.WriteString(m.renderPlanReviewDialog())
+			sb.WriteByte('\n')
+			sb.WriteString(m.renderStatusBar())
+			return sb.String()
+		}
+		if m.taskPanelMode {
+			sb.WriteString(m.renderTaskPanel())
 			sb.WriteByte('\n')
 			sb.WriteString(m.renderStatusBar())
 			return sb.String()

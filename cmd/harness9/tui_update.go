@@ -23,6 +23,7 @@ import (
 	"github.com/harness9/internal/permission"
 	"github.com/harness9/internal/planning"
 	"github.com/harness9/internal/schema"
+	"github.com/harness9/internal/subagent"
 )
 
 // execPrompt 是用户批准 Plan Mode 计划后，首次触发执行阶段的指令文本。
@@ -71,6 +72,7 @@ var builtinCmds = []struct {
 	{"new", "开启新会话"},
 	{"resume", "恢复历史会话"},
 	{"plan", "进入规划模式分析任务"},
+	{"tasks", "查看后台子代理任务"},
 	{"exit", "退出 TUI"},
 }
 
@@ -157,6 +159,11 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// 其他按键忽略，防止误触。
 			return m, nil
 		}
+		// 任务面板（taskPanelMode）激活时：列表/详情态的全部按键交由 handleTaskPanelKey 处理，
+		// 屏蔽普通输入。面板为模态视图，由 View() 替换输入区渲染。
+		if m.taskPanelMode {
+			return m.handleTaskPanelKey(msg)
+		}
 		switch msg.Type {
 		case tea.KeyEsc:
 			// Shell 模式下按 Esc：清空输入并退出 Shell 模式，恢复普通状态
@@ -173,6 +180,14 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			return m, tea.Quit
+		case tea.KeyCtrlT:
+			// 切换后台任务面板。仅在空闲态可用，避免与运行中/审批/审查/恢复选择等模态冲突。
+			if !m.running && !m.approvalPending && !m.planReviewing && !m.resumeSelecting {
+				m.taskPanelMode = !m.taskPanelMode
+				m.taskDetailID = ""
+				m.taskPanelCursor = 0
+			}
+			return m, nil
 		case tea.KeyPgUp, tea.KeyCtrlUp:
 			scrollH := m.scrollHeight()
 			m = m.scrollBy(-(scrollH / 2))
@@ -221,6 +236,14 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// /exit 静默退出，不追加用户消息行
 			if raw == "/exit" {
 				return m, tea.Quit
+			}
+
+			// /tasks 打开后台任务面板（模态），不作为用户消息回显。
+			if raw == "/tasks" {
+				m.taskPanelMode = true
+				m.taskDetailID = ""
+				m.taskPanelCursor = 0
+				return m, nil
 			}
 
 			// Shell 模式: "!" 前缀直接执行 Bash 命令，绕过 LLM
@@ -1183,6 +1206,49 @@ func (m tuiModel) confirmPlanReview(cursor int) (tea.Model, tea.Cmd) {
 		m.input.Focus()
 		return m, textinput.Blink
 	}
+}
+
+// handleTaskPanelKey 处理任务面板模态按键：列表态 ↑↓ 选择 / Enter 进详情 / Esc 关闭；
+// 详情态 ↑↓ 滚动 / Esc 回列表 / Ctrl+T 关闭。
+func (m tuiModel) handleTaskPanelKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	var list []subagent.TaskSnapshot
+	if m.subAgentTracker != nil {
+		list = m.subAgentTracker.List()
+	}
+	if m.taskDetailID == "" {
+		switch msg.Type {
+		case tea.KeyUp:
+			if m.taskPanelCursor > 0 {
+				m.taskPanelCursor--
+			}
+		case tea.KeyDown:
+			if m.taskPanelCursor < len(list)-1 {
+				m.taskPanelCursor++
+			}
+		case tea.KeyEnter:
+			if m.taskPanelCursor >= 0 && m.taskPanelCursor < len(list) {
+				m.taskDetailID = list[m.taskPanelCursor].ID
+				m.taskDetailScroll = 0
+			}
+		case tea.KeyEsc, tea.KeyCtrlT:
+			m.taskPanelMode = false
+		}
+		return m, nil
+	}
+	switch msg.Type {
+	case tea.KeyUp:
+		if m.taskDetailScroll > 0 {
+			m.taskDetailScroll--
+		}
+	case tea.KeyDown:
+		m.taskDetailScroll++
+	case tea.KeyEsc:
+		m.taskDetailID = ""
+	case tea.KeyCtrlT:
+		m.taskPanelMode = false
+		m.taskDetailID = ""
+	}
+	return m, nil
 }
 
 // truncateUTF8 按字节截断 s 到 maxBytes 以内，同时保证不在多字节 UTF-8 字符中间截断。
