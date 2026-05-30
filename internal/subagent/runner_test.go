@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/harness9/internal/hooks"
@@ -133,5 +134,137 @@ func TestRunnerForwardsProgress(t *testing.T) {
 	}
 	if !sawStart || !sawDone {
 		t.Fatalf("应收到 start 与 done 更新: start=%v done=%v", sawStart, sawDone)
+	}
+}
+
+// readFileCallMock 返回一个 mock：第 1 个 turn 发起一次 read_file 工具调用，
+// 之后的 turn 返回最终文本。用于驱动子代理实际执行一次工具，触发权限审批链。
+func readFileCallMock(finalText string) provider.LLMProvider {
+	var mu sync.Mutex
+	turn := 0
+	return providertest.NewMockWithCallback(func(_ []schema.Message, _ []schema.ToolDefinition) schema.Message {
+		mu.Lock()
+		turn++
+		n := turn
+		mu.Unlock()
+		if n == 1 {
+			return schema.Message{
+				Role: schema.RoleAssistant,
+				ToolCalls: []schema.ToolCall{
+					{ID: "c1", Name: "read_file", Arguments: json.RawMessage(`{}`)},
+				},
+			}
+		}
+		return schema.Message{Role: schema.RoleAssistant, Content: finalText}
+	})
+}
+
+// TestRunnerForegroundApprovalBridge 验证：前台模式下，子代理触发的工具审批
+// 会桥接到父级 ApprovalFunc（人类在环），而非自动拒绝。
+func TestRunnerForegroundApprovalBridge(t *testing.T) {
+	mock := readFileCallMock("ok")
+	base := []tools.BaseTool{&fakeTool{"read_file"}}
+	r := newTestRunner(t, base, mock)
+
+	var mu sync.Mutex
+	var calls int
+	var sawTool string
+	ctx := hooks.WithApprovalFn(context.Background(),
+		func(_ context.Context, tc schema.ToolCall, _, _ string) hooks.ApprovalResponse {
+			mu.Lock()
+			calls++
+			sawTool = tc.Name
+			mu.Unlock()
+			return hooks.ApprovalResponse{Approved: true}
+		})
+
+	def := SubAgentDefinition{Name: "fg", Description: "d", SystemPrompt: "p", Tools: []string{"read_file"}}
+	if _, err := r.Run(ctx, def, "go", false); err != nil {
+		t.Fatal(err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if calls != 1 {
+		t.Fatalf("前台应恰好桥接一次审批到父级, 得 %d", calls)
+	}
+	if sawTool != "read_file" {
+		t.Fatalf("审批工具名应为 read_file, 得 %q", sawTool)
+	}
+}
+
+// TestRunnerBackgroundFailClosed 验证：后台模式下，子代理的工具审批永不
+// 升级到人类（fail-closed），父级 ApprovalFunc 绝不会被调用。
+func TestRunnerBackgroundFailClosed(t *testing.T) {
+	mock := readFileCallMock("ok")
+	base := []tools.BaseTool{&fakeTool{"read_file"}}
+	r := newTestRunner(t, base, mock)
+
+	var mu sync.Mutex
+	var calls int
+	ctx := hooks.WithApprovalFn(context.Background(),
+		func(_ context.Context, _ schema.ToolCall, _, _ string) hooks.ApprovalResponse {
+			mu.Lock()
+			calls++
+			mu.Unlock()
+			return hooks.ApprovalResponse{Approved: true}
+		})
+
+	def := SubAgentDefinition{Name: "bg", Description: "d", SystemPrompt: "p", Tools: []string{"read_file"}}
+	if _, err := r.Run(ctx, def, "go", true); err != nil {
+		t.Fatal(err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if calls != 0 {
+		t.Fatalf("后台模式绝不应升级审批到父级, 但被调用 %d 次", calls)
+	}
+}
+
+// TestRunnerErrorPropagation 验证：当子代理始终发起工具调用、永不终止时，
+// 引擎触及 max-turns 上限返回错误，Run 返回非 nil error 且发出 SubAgentError 进度。
+func TestRunnerErrorPropagation(t *testing.T) {
+	// mock 始终发起 read_file 工具调用，永不返回最终文本 → 触发 max-turns。
+	mock := providertest.NewMockWithCallback(func(_ []schema.Message, _ []schema.ToolDefinition) schema.Message {
+		return schema.Message{
+			Role: schema.RoleAssistant,
+			ToolCalls: []schema.ToolCall{
+				{ID: "c1", Name: "read_file", Arguments: json.RawMessage(`{}`)},
+			},
+		}
+	})
+	base := []tools.BaseTool{&fakeTool{"read_file"}}
+	r := newTestRunner(t, base, mock)
+	r.defaultMaxTurns = 2
+
+	var mu sync.Mutex
+	var updates []schema.SubAgentUpdate
+	ctx := hooks.WithSubAgentProgress(context.Background(), func(u schema.SubAgentUpdate) {
+		mu.Lock()
+		updates = append(updates, u)
+		mu.Unlock()
+	})
+	ctx = hooks.WithApprovalFn(ctx,
+		func(_ context.Context, _ schema.ToolCall, _, _ string) hooks.ApprovalResponse {
+			return hooks.ApprovalResponse{Approved: true}
+		})
+
+	def := SubAgentDefinition{Name: "loop", Description: "d", SystemPrompt: "p", Tools: []string{"read_file"}}
+	_, err := r.Run(ctx, def, "go", false)
+	if err == nil {
+		t.Fatal("子代理触及 max-turns 应返回非 nil error")
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	var sawError bool
+	for _, u := range updates {
+		if u.Kind == schema.SubAgentError {
+			sawError = true
+		}
+	}
+	if !sawError {
+		t.Fatal("应至少发出一条 SubAgentError 进度更新")
 	}
 }

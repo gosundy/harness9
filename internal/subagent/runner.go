@@ -80,7 +80,7 @@ func (r *Runner) buildChildRegistry(def SubAgentDefinition) (tools.Registry, err
 func (r *Runner) Run(ctx context.Context, def SubAgentDefinition, prompt string, background bool) (SubAgentResult, error) {
 	childReg, err := r.buildChildRegistry(def)
 	if err != nil {
-		return SubAgentResult{}, err
+		return SubAgentResult{}, fmt.Errorf("构建子代理工具注册表失败: %w", err)
 	}
 
 	p, ctxWin, err := r.providerFor(def.Model)
