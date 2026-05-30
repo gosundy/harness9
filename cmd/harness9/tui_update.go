@@ -236,6 +236,7 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// 仅在 LLM 路径（含 /new、/resume、/plan、普通 prompt）重置；autoExecuting 续跑走 dispatch
 			// 不经过此处，因此续跑期间子代理进度可跨 EventDone 保留。
 			m.subAgentLines = nil
+			m.subAgentStreaming = false
 
 			// 处理其他内置命令
 			if raw == "/new" {
@@ -560,24 +561,43 @@ func (m tuiModel) handleEvent(evt engine.Event) (tea.Model, tea.Cmd) {
 	case engine.EventSubAgent:
 		if u, ok := evt.Data.(schema.SubAgentUpdate); ok {
 			switch u.Kind {
+			case schema.SubAgentDelta:
+				// 文本增量：合并到当前正在累积的正文行，而非每个 token 新建一行（修复刷屏）。
+				// 增量内的换行折叠为空格保持单行；末行过长（>160 runes）时另起一行软换行。
+				s := strings.ReplaceAll(u.Text, "\n", " ")
+				if s == "" {
+					break
+				}
+				last := len(m.subAgentLines) - 1
+				if m.subAgentStreaming && last >= 0 && utf8.RuneCountInString(m.subAgentLines[last]) < 160 {
+					m.subAgentLines[last] += s
+				} else {
+					m.subAgentLines = append(m.subAgentLines, fmt.Sprintf("[%s] %s", u.AgentName, s))
+					m.subAgentStreaming = true
+				}
 			case schema.SubAgentStart:
 				m.subAgentLines = append(m.subAgentLines, fmt.Sprintf("[%s] 子代理启动…", u.AgentName))
+				m.subAgentStreaming = false
 			case schema.SubAgentToolStart:
-				m.subAgentLines = append(m.subAgentLines, fmt.Sprintf("[%s] ▸ %s", u.AgentName, u.ToolName))
-			case schema.SubAgentDelta:
-				if s := strings.TrimSpace(u.Text); s != "" {
-					m.subAgentLines = append(m.subAgentLines, fmt.Sprintf("[%s] %s", u.AgentName, s))
+				line := fmt.Sprintf("[%s] ▸ %s", u.AgentName, u.ToolName)
+				if args := strings.TrimSpace(u.Text); args != "" && args != "{}" {
+					line += "(" + truncateUTF8(args, 80) + ")"
 				}
+				m.subAgentLines = append(m.subAgentLines, line)
+				m.subAgentStreaming = false
 			case schema.SubAgentToolResult:
 				mark := "✓"
 				if u.IsError {
 					mark = "✗"
 				}
 				m.subAgentLines = append(m.subAgentLines, fmt.Sprintf("[%s]   %s", u.AgentName, mark))
+				m.subAgentStreaming = false
 			case schema.SubAgentDone:
 				m.subAgentLines = append(m.subAgentLines, fmt.Sprintf("[%s] ✓ 完成", u.AgentName))
+				m.subAgentStreaming = false
 			case schema.SubAgentError:
 				m.subAgentLines = append(m.subAgentLines, fmt.Sprintf("[%s] ✗ %s", u.AgentName, u.Text))
+				m.subAgentStreaming = false
 				// SubAgentThinking 故意不展示：子代理推理增量噪声大，仅 delta/工具/结果对用户有意义。
 			}
 			// 限制缓冲行数，避免长时间运行的子代理无界增长（仅保留最近 maxSubAgentLines 行）。

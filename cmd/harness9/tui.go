@@ -249,6 +249,10 @@ type tuiModel struct {
 	// subAgentLines 缓存当前活跃子代理的流式进度行（由 EventSubAgent 追加），
 	// 渲染为对话区下方的暗青色缩进块；新一轮用户消息开始时重置。
 	subAgentLines []string
+	// subAgentStreaming 标记 subAgentLines 末行是否为"正在累积的子代理正文行"。
+	// 为 true 时，后续文本增量（delta）追加到末行而非新建行（避免每个 token 一行的刷屏）；
+	// 遇到工具/启动/完成等非 delta 事件时置回 false，使下一段正文另起一行。
+	subAgentStreaming bool
 
 	// shellMode 为 true 时表示输入框当前以 "!" 开头，处于 Shell 执行模式。
 	// 由 Update() 中的输入实时检测逻辑驱动（非 running 状态下每次按键后检测），

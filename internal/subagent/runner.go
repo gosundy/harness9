@@ -115,12 +115,27 @@ func (r *Runner) Run(ctx context.Context, def SubAgentDefinition, prompt string,
 	}
 	sub := engine.NewAgentEngine(p, childReg, r.workDir, opts...)
 
-	// 执行 context：前台用调用方 ctx；后台用会话级 base ctx 派生（独立于父 turn）。
-	execCtx := ctx
-	if background {
-		var cancel context.CancelFunc
-		execCtx, cancel = context.WithCancel(r.baseCtx)
-		defer cancel()
+	// 执行 context 的关键设计：
+	// 调用方 ctx 是父引擎的"工具执行 ctx"，带有 toolTimeout（默认 60s）——这是为单个普通工具
+	// （bash/read_file）设计的时限，但子代理本身是一个多轮 agent，整轮运行可能远超 60s。
+	// 若直接复用 ctx，子代理会在 60s 处被父工具超时杀死（表现为 LLM 调用 context deadline exceeded）。
+	// 因此前台与后台都从会话级 baseCtx 派生 execCtx（无 60s 工具时限）：
+	//   - 后台：完全脱离父 turn，仅受会话级取消约束。
+	//   - 前台：额外监听调用方 ctx 的"真正取消"（用户 Ctrl+C，Cause != DeadlineExceeded）并传播，
+	//           但忽略 60s 工具超时这一 Cause，使子代理得以跑完多轮。
+	execCtx, cancel := context.WithCancel(r.baseCtx)
+	defer cancel()
+	if !background {
+		go func() {
+			select {
+			case <-ctx.Done():
+				if context.Cause(ctx) != context.DeadlineExceeded {
+					cancel() // 真正的取消（如 Ctrl+C）→ 停止子代理；60s 工具超时则忽略
+				}
+			case <-execCtx.Done():
+				// 子代理已结束，停止监听，避免 goroutine 泄漏。
+			}
+		}()
 	}
 
 	progress := hooks.SubAgentProgressFromContext(ctx)
@@ -162,7 +177,8 @@ func (r *Runner) Run(ctx context.Context, def SubAgentDefinition, prompt string,
 		case engine.EventToolStart:
 			currentTurnText = "" // 工具前文本是中间产物，丢弃
 			if tc, ok := evt.Data.(schema.ToolCall); ok {
-				emit(schema.SubAgentUpdate{Kind: schema.SubAgentToolStart, ToolName: tc.Name})
+				// Text 携带工具调用参数（紧凑 JSON），供 TUI 展示 `工具名(参数)`。
+				emit(schema.SubAgentUpdate{Kind: schema.SubAgentToolStart, ToolName: tc.Name, Text: string(tc.Arguments)})
 			}
 		case engine.EventToolResult:
 			if d, ok := evt.Data.(engine.ToolResultData); ok {
