@@ -124,6 +124,11 @@ func (r *Runner) Run(ctx context.Context, def SubAgentDefinition, prompt string,
 	}
 
 	progress := hooks.SubAgentProgressFromContext(ctx)
+	if background {
+		// 后台子代理脱离父 turn 生命周期运行：父 RunStream 的事件 channel 届时可能已关闭，
+		// 继续向其发送会触发 send-on-closed-channel panic。后台进度改由 Mailbox 投递，故此处不向父进度 sink 发送。
+		progress = nil
+	}
 	emit := func(u schema.SubAgentUpdate) {
 		u.AgentName = def.Name
 		if progress != nil {

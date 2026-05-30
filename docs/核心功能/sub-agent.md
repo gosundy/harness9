@@ -145,8 +145,8 @@ task 工具立即返回 <task id="task-code-reviewer-1" state="running"/>
     ▼ 同时：go func(){...}()
         execCtx 从会话级 baseCtx 派生（独立于父 turn，不受工具 60s 超时影响）
         审批请求 → 一律拒绝（fail-closed），返回"子代理无可用审批通道，已自动拒绝"
-        子引擎执行完成 → mailbox.Deliver(CompletedTask{...})
-            │ 触发 SetNotify 回调（TUI 接收通知）
+        子引擎执行完成 → mailbox.Deliver(CompletedTask{...}) 缓冲到信箱
+            │ 若 TUI 注册了 SetNotify 回调，则触发以提示重绘（可选，当前 TUI 未注册）
 
 下一次 dispatch() 前：
     mailbox.Drain() → 拼入 prompt 前缀 → 注入 LLM 上下文
@@ -237,7 +237,7 @@ done := mailbox.Drain()  // 线程安全，立即清空
 // - 子代理 code-reviewer（完成）: ...
 ```
 
-`SetNotify` 注入 TUI 通知回调：后台任务完成时，`Deliver` 触发回调，TUI 收到通知可提示用户（当前实现日志记录，下次 dispatch 自动注入）。
+后台结果不会主动推送或打印：`Deliver` 仅将 `CompletedTask` 追加到信箱缓冲区，结果在父代理**下次 dispatch** 时由消费侧（TUI/CLI）`Drain` 排空并前置注入 LLM 上下文。`SetNotify` 是一个可选的完成通知钩子，TUI 可选择性地注册它以在后台任务完成时触发界面重绘（nudge redraw）；当前 TUI 未注册该回调，`Deliver` 本身不做日志记录。
 
 ---
 

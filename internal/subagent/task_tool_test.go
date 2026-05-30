@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/harness9/internal/memory"
 	"github.com/harness9/internal/provider"
@@ -84,5 +86,49 @@ func TestTaskToolBackgroundReturnsRunning(t *testing.T) {
 	}
 	if !strings.Contains(out, "running") {
 		t.Fatalf("后台应立即返回 running 状态: %s", out)
+	}
+}
+
+// TestTaskToolConcurrentBackgroundUniqueIDs 回归测试 Bug2：并发 background 调用下
+// idSeq 原子自增，返回的 running 句柄必须互不重复且非空（-race 下验证无数据竞争）。
+func TestTaskToolConcurrentBackgroundUniqueIDs(t *testing.T) {
+	mock := providertest.NewMockWithCallback(func(_ []schema.Message, _ []schema.ToolDefinition) schema.Message {
+		return schema.Message{Role: schema.RoleAssistant, Content: "ok"}
+	})
+	tt := newTaskToolForTest(t, mock)
+	args, _ := json.Marshal(map[string]any{"subagent_type": "reviewer", "prompt": "x", "background": true})
+
+	const n = 8
+	var wg sync.WaitGroup
+	ids := make([]string, n)
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			out, err := tt.Execute(context.Background(), args)
+			if err != nil {
+				t.Errorf("Execute err: %v", err)
+				return
+			}
+			ids[idx] = out
+		}(i)
+	}
+	wg.Wait()
+	// 收尾：等待后台 goroutine 完成投递，避免测试结束时的悬挂 goroutine。
+	deadline := time.After(5 * time.Second)
+	for tt.mailbox.Pending() < n {
+		select {
+		case <-deadline:
+			t.Fatalf("后台任务未在期限内全部完成，Pending=%d", tt.mailbox.Pending())
+		default:
+			time.Sleep(time.Millisecond)
+		}
+	}
+	seen := map[string]bool{}
+	for _, out := range ids {
+		if out == "" || seen[out] {
+			t.Fatalf("后台任务返回了空或重复的 running 句柄: %q (all=%v)", out, ids)
+		}
+		seen[out] = true
 	}
 }

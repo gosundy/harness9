@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"sync/atomic"
 
 	"github.com/harness9/internal/schema"
 )
@@ -15,7 +16,7 @@ type TaskTool struct {
 	reg     *Registry
 	runner  *Runner
 	mailbox *Mailbox
-	idSeq   int // 后台任务 ID 序号
+	idSeq   atomic.Int64 // 后台任务 ID 序号（并发 background 调用下原子自增）
 }
 
 // NewTaskTool 创建 task 工具。
@@ -92,9 +93,14 @@ func (t *TaskTool) Execute(ctx context.Context, args json.RawMessage) (string, e
 	}
 
 	if a.Background {
-		t.idSeq++
-		taskID := fmt.Sprintf("task-%s-%d", def.Name, t.idSeq)
+		taskID := fmt.Sprintf("task-%s-%d", def.Name, t.idSeq.Add(1))
 		go func() {
+			defer func() {
+				if rec := recover(); rec != nil {
+					t.mailbox.Deliver(CompletedTask{TaskID: taskID, AgentName: def.Name, IsError: true,
+						FinalText: fmt.Sprintf("子代理后台执行 panic: %v", rec)})
+				}
+			}()
 			res, err := t.runner.Run(ctx, def, a.Prompt, true)
 			ct := CompletedTask{TaskID: taskID, AgentName: def.Name}
 			if err != nil {

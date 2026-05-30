@@ -222,6 +222,23 @@ func TestRunnerBackgroundFailClosed(t *testing.T) {
 	}
 }
 
+// 回归测试 Bug1：后台子代理绝不向父进度 sink 发送（否则父 channel 关闭后会 panic）。
+func TestRunnerBackgroundSuppressesProgress(t *testing.T) {
+	mock := providertest.NewMockWithCallback(func(_ []schema.Message, _ []schema.ToolDefinition) schema.Message {
+		return schema.Message{Role: schema.RoleAssistant, Content: "bg-done"}
+	})
+	r := newTestRunner(t, nil, mock)
+	var calls int
+	ctx := hooks.WithSubAgentProgress(context.Background(), func(schema.SubAgentUpdate) { calls++ })
+	def := SubAgentDefinition{Name: "bg", Description: "d", SystemPrompt: "p"}
+	if _, err := r.Run(ctx, def, "go", true); err != nil { // background=true
+		t.Fatal(err)
+	}
+	if calls != 0 {
+		t.Fatalf("后台子代理不应向父进度 sink 发送，实际发送 %d 次", calls)
+	}
+}
+
 // TestRunnerErrorPropagation 验证：当子代理始终发起工具调用、永不终止时，
 // 引擎触及 max-turns 上限返回错误，Run 返回非 nil error 且发出 SubAgentError 进度。
 func TestRunnerErrorPropagation(t *testing.T) {
