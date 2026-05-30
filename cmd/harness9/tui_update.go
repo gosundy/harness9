@@ -555,10 +555,17 @@ func (m tuiModel) handleEvent(evt engine.Event) (tea.Model, tea.Cmd) {
 				if s := strings.TrimSpace(u.Text); s != "" {
 					m.subAgentLines = append(m.subAgentLines, fmt.Sprintf("[%s] %s", u.AgentName, s))
 				}
+			case schema.SubAgentToolResult:
+				mark := "✓"
+				if u.IsError {
+					mark = "✗"
+				}
+				m.subAgentLines = append(m.subAgentLines, fmt.Sprintf("[%s]   %s", u.AgentName, mark))
 			case schema.SubAgentDone:
 				m.subAgentLines = append(m.subAgentLines, fmt.Sprintf("[%s] ✓ 完成", u.AgentName))
 			case schema.SubAgentError:
 				m.subAgentLines = append(m.subAgentLines, fmt.Sprintf("[%s] ✗ %s", u.AgentName, u.Text))
+				// SubAgentThinking 故意不展示：子代理推理增量噪声大，仅 delta/工具/结果对用户有意义。
 			}
 			// 限制缓冲行数，避免长时间运行的子代理无界增长（仅保留最近 maxSubAgentLines 行）。
 			if len(m.subAgentLines) > maxSubAgentLines {
