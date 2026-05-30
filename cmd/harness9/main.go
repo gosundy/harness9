@@ -163,6 +163,10 @@ Flags:
 
 	modelLimits := provider.GetModelLimits(modelName)
 
+	// agentMaxTurns 是主代理与子代理共用的最大 Turn 数：子代理与主代理保持一致，
+	// 避免子代理过早因 Turn 上限失败（同时显式化主代理的轮数，不再依赖引擎默认值）。
+	const agentMaxTurns = 50
+
 	// ---- Sub-Agent 系统接线 ----
 	// 子代理可用的基础工具实例（独立实例，沙箱根目录同为 workDir）。
 	subAgentBaseTools := []tools.BaseTool{
@@ -180,8 +184,7 @@ Flags:
 		Description:  "代码审查专家。写完或修改代码后主动使用，检查安全、性能与最佳实践。",
 		SystemPrompt: "你是一名资深代码审查专家。审查时聚焦：安全漏洞、性能问题、可维护性。给出具体、可操作的改进建议，引用文件与行号。",
 		Tools:        []string{"read_file", "bash"},
-		MaxTurns:     20,
-		Source:       "builtin",
+		Source:       "builtin", // 不设 MaxTurns，继承默认（= 主代理 agentMaxTurns）
 	}); err != nil {
 		log.Print(logfmt.FormatMsg("main", fmt.Sprintf("注册内置子代理失败: %v", err)))
 	}
@@ -196,7 +199,7 @@ Flags:
 		SettingsPath:       settingsPath,
 		SkillsIndex:        skillsIndex,
 		WorkDir:            workDir,
-		DefaultMaxTurns:    20,
+		DefaultMaxTurns:    agentMaxTurns,
 		ToolTimeout:        60 * time.Second,
 		MaxConcurrentTools: 0,
 		ProviderFor: func(model string) (provider.LLMProvider, int, error) {
@@ -235,6 +238,7 @@ Flags:
 		engine.WithCompactor(compactor),
 		engine.WithContextWindow(modelLimits.ContextTokens),
 		engine.WithTodoStore(todoStore),
+		engine.WithMaxTurns(agentMaxTurns),
 	)
 
 	if term.IsTerminal(os.Stdin.Fd()) {
