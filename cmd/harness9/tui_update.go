@@ -98,6 +98,25 @@ type shellResultMsg struct {
 // 触发一条即时的后台子代理完成提示（结果由 DrainCompleted 幂等取走并在下次 dispatch 注入 LLM）。
 type subAgentNotifyMsg struct{}
 
+// subAgentDirectMsg 是 @agent 前台直跑期间的进度/完成消息。
+type subAgentDirectMsg struct {
+	update *schema.SubAgentUpdate // 非 nil = 进度增量
+	done   bool
+	result string
+	err    error
+}
+
+// readNextSubAgentDirect 读取一条直跑消息并投递给 Update；ch 关闭时投递终止 done。
+func readNextSubAgentDirect(ch <-chan subAgentDirectMsg) tea.Cmd {
+	return func() tea.Msg {
+		msg, ok := <-ch
+		if !ok {
+			return subAgentDirectMsg{done: true}
+		}
+		return msg
+	}
+}
+
 // readNextEvent 返回一个 tea.Cmd，该 Cmd 阻塞直到 ch 中有一个 Event，
 // 然后以 eventMsg 形式递交给 Update。ch 关闭时递交 EventDone。
 func readNextEvent(ch <-chan engine.Event) tea.Cmd {
@@ -253,6 +272,11 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m.dispatchShellCommand(shellCmd)
 			}
 
+			// @<name> 前台直跑子代理：绕过主 LLM，dispatchMention 自行管理用户回显。
+			if strings.HasPrefix(raw, "@") {
+				return m.dispatchMention(raw)
+			}
+
 			// 显示用户消息
 			m.lines = append(m.lines, userMsgStyle.Render("▶ You: ")+raw)
 			// 新一轮用户消息开始：清空上一轮残留的子代理流式进度行，避免陈旧内容滞留。
@@ -347,6 +371,29 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// 后台子代理完成：即时将结果显示到对话区（用户立即可见），并缓存待下次注入 LLM。
 		m = m.harvestSubAgentResults()
 		return m, nil
+
+	case subAgentDirectMsg:
+		if msg.update != nil {
+			m = m.appendSubAgentUpdate(*msg.update)
+			return m, readNextSubAgentDirect(m.directCh)
+		}
+		// 完成：前台直跑结束，将最终结果直接展示到对话区。
+		m.running = false
+		if m.cancelFn != nil {
+			m.cancelFn()
+		}
+		if msg.err != nil {
+			m.lines = append(m.lines, errorStyle.Render("  ✗ 子代理失败: "+msg.err.Error()))
+		} else {
+			for _, ln := range strings.Split(strings.TrimRight(msg.result, "\n"), "\n") {
+				m.lines = append(m.lines, ln)
+			}
+		}
+		m.subAgentLines = nil
+		m.subAgentStreaming = false
+		m.directCh = nil
+		m.input.Focus()
+		return m, textinput.Blink
 	}
 
 	if !m.running {
@@ -579,51 +626,7 @@ func (m tuiModel) handleEvent(evt engine.Event) (tea.Model, tea.Cmd) {
 
 	case engine.EventSubAgent:
 		if u, ok := evt.Data.(schema.SubAgentUpdate); ok {
-			switch u.Kind {
-			case schema.SubAgentDelta:
-				// 文本增量：合并到当前正在累积的正文行，而非每个 token 新建一行（修复刷屏）。
-				// 增量内的换行折叠为空格保持单行；末行过长（>160 runes）时另起一行软换行。
-				s := strings.ReplaceAll(u.Text, "\n", " ")
-				if s == "" {
-					break
-				}
-				last := len(m.subAgentLines) - 1
-				if m.subAgentStreaming && last >= 0 && utf8.RuneCountInString(m.subAgentLines[last]) < 160 {
-					m.subAgentLines[last] += s
-				} else {
-					m.subAgentLines = append(m.subAgentLines, fmt.Sprintf("[%s] %s", u.AgentName, s))
-					m.subAgentStreaming = true
-				}
-			case schema.SubAgentStart:
-				m.subAgentLines = append(m.subAgentLines, fmt.Sprintf("[%s] 子代理启动…", u.AgentName))
-				m.subAgentStreaming = false
-			case schema.SubAgentToolStart:
-				line := fmt.Sprintf("[%s] ▸ %s", u.AgentName, u.ToolName)
-				if args := strings.TrimSpace(u.Text); args != "" && args != "{}" {
-					line += "(" + truncateUTF8(args, 80) + ")"
-				}
-				m.subAgentLines = append(m.subAgentLines, line)
-				m.subAgentStreaming = false
-			case schema.SubAgentToolResult:
-				// 成功的工具结果不单独成行：上面的 `▸ 工具名(参数)` 已展示该调用，
-				// 再加一行 ✓ 既无信息量，又会在 maxSubAgentLines 上限下挤掉有用的调用行（"空 tool-calling"）。
-				// 仅在出错时提示，便于用户察觉子代理的工具失败。
-				if u.IsError {
-					m.subAgentLines = append(m.subAgentLines, fmt.Sprintf("[%s]   ✗ 工具执行失败", u.AgentName))
-					m.subAgentStreaming = false
-				}
-			case schema.SubAgentDone:
-				m.subAgentLines = append(m.subAgentLines, fmt.Sprintf("[%s] ✓ 完成", u.AgentName))
-				m.subAgentStreaming = false
-			case schema.SubAgentError:
-				m.subAgentLines = append(m.subAgentLines, fmt.Sprintf("[%s] ✗ %s", u.AgentName, u.Text))
-				m.subAgentStreaming = false
-				// SubAgentThinking 故意不展示：子代理推理增量噪声大，仅 delta/工具/结果对用户有意义。
-			}
-			// 限制缓冲行数，避免长时间运行的子代理无界增长（仅保留最近 maxSubAgentLines 行）。
-			if len(m.subAgentLines) > maxSubAgentLines {
-				m.subAgentLines = m.subAgentLines[len(m.subAgentLines)-maxSubAgentLines:]
-			}
+			m = m.appendSubAgentUpdate(u)
 		}
 		return m, readNextEvent(m.eventCh)
 
@@ -640,6 +643,58 @@ func (m tuiModel) handleEvent(evt engine.Event) (tea.Model, tea.Cmd) {
 	}
 
 	return m, readNextEvent(m.eventCh)
+}
+
+// appendSubAgentUpdate 把一条子代理进度更新合并/追加到 subAgentLines（delta 合并、tool_start 带参数、错误提示）。
+// 由 EventSubAgent（主引擎转发的后台/Task 工具进度）与 subAgentDirectMsg（@agent 前台直跑进度）共享，
+// 保证两条路径的渲染语义完全一致。
+func (m tuiModel) appendSubAgentUpdate(u schema.SubAgentUpdate) tuiModel {
+	switch u.Kind {
+	case schema.SubAgentDelta:
+		// 文本增量：合并到当前正在累积的正文行，而非每个 token 新建一行（修复刷屏）。
+		// 增量内的换行折叠为空格保持单行；末行过长（>160 runes）时另起一行软换行。
+		s := strings.ReplaceAll(u.Text, "\n", " ")
+		if s == "" {
+			return m
+		}
+		last := len(m.subAgentLines) - 1
+		if m.subAgentStreaming && last >= 0 && utf8.RuneCountInString(m.subAgentLines[last]) < 160 {
+			m.subAgentLines[last] += s
+		} else {
+			m.subAgentLines = append(m.subAgentLines, fmt.Sprintf("[%s] %s", u.AgentName, s))
+			m.subAgentStreaming = true
+		}
+	case schema.SubAgentStart:
+		m.subAgentLines = append(m.subAgentLines, fmt.Sprintf("[%s] 子代理启动…", u.AgentName))
+		m.subAgentStreaming = false
+	case schema.SubAgentToolStart:
+		line := fmt.Sprintf("[%s] ▸ %s", u.AgentName, u.ToolName)
+		if args := strings.TrimSpace(u.Text); args != "" && args != "{}" {
+			line += "(" + truncateUTF8(args, 80) + ")"
+		}
+		m.subAgentLines = append(m.subAgentLines, line)
+		m.subAgentStreaming = false
+	case schema.SubAgentToolResult:
+		// 成功的工具结果不单独成行：上面的 `▸ 工具名(参数)` 已展示该调用，
+		// 再加一行 ✓ 既无信息量，又会在 maxSubAgentLines 上限下挤掉有用的调用行（"空 tool-calling"）。
+		// 仅在出错时提示，便于用户察觉子代理的工具失败。
+		if u.IsError {
+			m.subAgentLines = append(m.subAgentLines, fmt.Sprintf("[%s]   ✗ 工具执行失败", u.AgentName))
+			m.subAgentStreaming = false
+		}
+	case schema.SubAgentDone:
+		m.subAgentLines = append(m.subAgentLines, fmt.Sprintf("[%s] ✓ 完成", u.AgentName))
+		m.subAgentStreaming = false
+	case schema.SubAgentError:
+		m.subAgentLines = append(m.subAgentLines, fmt.Sprintf("[%s] ✗ %s", u.AgentName, u.Text))
+		m.subAgentStreaming = false
+		// SubAgentThinking 故意不展示：子代理推理增量噪声大，仅 delta/工具/结果对用户有意义。
+	}
+	// 限制缓冲行数，避免长时间运行的子代理无界增长（仅保留最近 maxSubAgentLines 行）。
+	if len(m.subAgentLines) > maxSubAgentLines {
+		m.subAgentLines = m.subAgentLines[len(m.subAgentLines)-maxSubAgentLines:]
+	}
+	return m
 }
 
 // scrollHeight 返回对话区域可显示的行数。
@@ -685,6 +740,34 @@ func (m tuiModel) scrollBy(delta int) tuiModel {
 // 补全顺序：内置命令优先，其次 Skills。
 func (m tuiModel) cycleCompletion() tuiModel {
 	raw := m.input.Value()
+	// @<name> 补全：匹配已注册的子代理名（供 @agent 前台直跑使用）。
+	// 置于 "/" 守卫之前，复用同一套 typedPrefix/completions 循环状态。
+	if strings.HasPrefix(raw, "@") && !m.resumeSelecting {
+		prefix := strings.TrimPrefix(strings.SplitN(raw, " ", 2)[0], "@")
+		if m.typedPrefix == "" {
+			var matches []string
+			if m.subAgentReg != nil {
+				for _, d := range m.subAgentReg.List() {
+					if strings.HasPrefix(d.Name, prefix) {
+						matches = append(matches, d.Name)
+					}
+				}
+			}
+			if len(matches) == 0 {
+				return m
+			}
+			m.typedPrefix = prefix
+			m.completions = matches
+			m.completionIdx = 0
+		} else if len(m.completions) > 0 {
+			m.completionIdx = (m.completionIdx + 1) % len(m.completions)
+		}
+		if len(m.completions) > 0 {
+			m.input.SetValue("@" + m.completions[m.completionIdx] + " ")
+			m.input.CursorEnd()
+		}
+		return m
+	}
 	if !strings.HasPrefix(raw, "/") || m.resumeSelecting {
 		return m
 	}
@@ -990,6 +1073,57 @@ func (m tuiModel) harvestSubAgentResults() tuiModel {
 			fmt.Sprintf("[后台子代理 %s %s]\n%s", ct.AgentName, status, ct.FinalText))
 	}
 	return m
+}
+
+// dispatchMention 解析 @<name> <task> 并前台直跑指定子代理（绕过主 LLM）。
+func (m tuiModel) dispatchMention(raw string) (tuiModel, tea.Cmd) {
+	m.lines = append(m.lines, userMsgStyle.Render("▶ You: ")+raw)
+	body := strings.TrimSpace(strings.TrimPrefix(raw, "@"))
+	name, task, _ := strings.Cut(body, " ")
+	task = strings.TrimSpace(task)
+	if m.subAgentReg == nil || m.subAgentRunner == nil {
+		m.lines = append(m.lines, errorStyle.Render("  ✗ 子代理未启用"))
+		return m, nil
+	}
+	def, ok := m.subAgentReg.Get(name)
+	if !ok {
+		var names []string
+		for _, d := range m.subAgentReg.List() {
+			names = append(names, d.Name)
+		}
+		m.lines = append(m.lines, errorStyle.Render("  ✗ 未知子代理: "+name+"（可用: "+strings.Join(names, ", ")+"）"))
+		return m, nil
+	}
+	if task == "" {
+		m.lines = append(m.lines, errorStyle.Render("  ✗ 请在 @"+name+" 后输入任务"))
+		return m, nil
+	}
+	m.subAgentLines = nil
+	m.subAgentStreaming = false
+	m.running = true
+	ctx, cancel := context.WithCancel(m.outerCtx)
+	m.cancelFn = cancel
+	ch := make(chan subAgentDirectMsg)
+	m.directCh = ch
+	def2 := def
+	go func() {
+		defer close(ch)
+		sink := func(u schema.SubAgentUpdate) {
+			// u 是 sink 的入参，每次回调独享一份；取地址后随消息发出是安全的。
+			select {
+			case ch <- subAgentDirectMsg{update: &u}:
+			case <-ctx.Done():
+			}
+		}
+		cctx := hooks.WithSubAgentProgress(ctx, sink)
+		res, err := m.subAgentRunner.Run(cctx, def2, task, false)
+		select {
+		case ch <- subAgentDirectMsg{done: true, result: res.FinalText, err: err}:
+		case <-ctx.Done():
+		}
+	}()
+	m.lines = append(m.lines, assistantStyle.Render("◆ "+def.Name+":"), "")
+	return m, tea.Batch(readNextSubAgentDirect(m.directCh), m.spinner.Tick)
 }
 
 func (m tuiModel) dispatch(prompt string) (tuiModel, tea.Cmd) {

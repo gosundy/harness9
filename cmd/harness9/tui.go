@@ -246,6 +246,11 @@ type tuiModel struct {
 	// subAgentTracker 是后台子代理任务跟踪器（单一事实源）。后台 goroutine 完成后写入 tracker，
 	// dispatch() 在下次向 LLM 发送消息前通过 DrainCompleted 排空并前置注入 prompt（镜像 pendingShellOutput 机制）。
 	subAgentTracker *subagent.TaskTracker
+	// subAgentReg / subAgentRunner 支撑 @agent 前台直跑：根据名称解析子代理定义并直接驱动其引擎，绕过主 LLM。
+	subAgentReg    *subagent.Registry
+	subAgentRunner *subagent.Runner
+	// directCh 是 @agent 前台直跑期间的进度/完成消息通道（镜像主引擎的 eventCh + readNextEvent 模式）。
+	directCh chan subAgentDirectMsg
 	// subAgentLines 缓存当前活跃子代理的流式进度行（由 EventSubAgent 追加），
 	// 渲染为对话区下方的暗青色缩进块；新一轮用户消息开始时重置。
 	subAgentLines []string
@@ -289,7 +294,7 @@ type pendingToolInfo struct {
 }
 
 // newTUIModel 构造已初始化的 tuiModel：输入框聚焦，spinner 使用 Dot 样式。
-func newTUIModel(eng *engine.AgentEngine, idx *skills.Index, mgr *memory.Manager, sess memory.Session, todoStore *planning.TodoStore, tracker *subagent.TaskTracker, outerCtx context.Context, workDir, modelName string) tuiModel {
+func newTUIModel(eng *engine.AgentEngine, idx *skills.Index, mgr *memory.Manager, sess memory.Session, todoStore *planning.TodoStore, tracker *subagent.TaskTracker, reg *subagent.Registry, runner *subagent.Runner, outerCtx context.Context, workDir, modelName string) tuiModel {
 	sp := spinner.New()
 	sp.Spinner = spinner.Dot
 	sp.Style = lipgloss.NewStyle().Foreground(lipgloss.Color("11"))
@@ -317,6 +322,8 @@ func newTUIModel(eng *engine.AgentEngine, idx *skills.Index, mgr *memory.Manager
 		pendingTools:      make(map[string]pendingToolInfo),
 		thinkingLineStart: -1, // -1 = 本轮尚未开始 thinking 块
 		subAgentTracker:   tracker,
+		subAgentReg:       reg,
+		subAgentRunner:    runner,
 	}
 	if sess != nil {
 		m.sessionID = sess.SessionID()
@@ -332,13 +339,13 @@ func (m tuiModel) Init() tea.Cmd {
 
 // RunTUI 以 AltScreen 模式启动 Bubbletea 程序。
 // 用户按 Ctrl-C/Ctrl-D（空闲时）退出后返回。
-func RunTUI(ctx context.Context, eng *engine.AgentEngine, mgr *memory.Manager, sess memory.Session, idx *skills.Index, todoStore *planning.TodoStore, tracker *subagent.TaskTracker, workDir, modelName string) error {
+func RunTUI(ctx context.Context, eng *engine.AgentEngine, mgr *memory.Manager, sess memory.Session, idx *skills.Index, todoStore *planning.TodoStore, tracker *subagent.TaskTracker, reg *subagent.Registry, runner *subagent.Runner, workDir, modelName string) error {
 	// TUI 独占终端，将内部日志重定向到静默，避免污染 AltScreen 输出。
 	// 退出后恢复原 Writer，避免影响同进程其他逻辑（如测试框架）。
 	origWriter := log.Writer()
 	log.SetOutput(io.Discard)
 	defer log.SetOutput(origWriter)
-	m := newTUIModel(eng, idx, mgr, sess, todoStore, tracker, ctx, workDir, modelName)
+	m := newTUIModel(eng, idx, mgr, sess, todoStore, tracker, reg, runner, ctx, workDir, modelName)
 	p := tea.NewProgram(m, tea.WithAltScreen(), tea.WithContext(ctx), tea.WithMouseCellMotion())
 	// 后台子代理完成时，经 TaskTracker 通知回调向 TUI 投递 subAgentNotifyMsg，触发即时完成提示。
 	// p.Send 是 goroutine-safe 的，可从后台 goroutine 调用。

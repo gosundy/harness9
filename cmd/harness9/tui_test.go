@@ -12,11 +12,12 @@ import (
 
 	"github.com/harness9/internal/engine"
 	"github.com/harness9/internal/schema"
+	"github.com/harness9/internal/subagent"
 )
 
 // newTestModel 返回适合单元测试的 tuiModel（nil engine/skills，固定尺寸）。
 func newTestModel() tuiModel {
-	m := newTUIModel(nil, nil, nil, nil, nil, nil, context.Background(), "/tmp/test", "test-model")
+	m := newTUIModel(nil, nil, nil, nil, nil, nil, nil, nil, context.Background(), "/tmp/test", "test-model")
 	m.width = 80
 	m.height = 24
 	return m
@@ -881,6 +882,32 @@ func TestDispatch_ClearsPendingShellOutputAfterInject(t *testing.T) {
 
 	if len(m.pendingShellOutput) != 0 {
 		t.Errorf("pendingShellOutput should be empty after dispatch, got %d entries", len(m.pendingShellOutput))
+	}
+}
+
+// --- @agent 前台直跑测试 ---
+
+func TestDispatchMentionUnknownAgent(t *testing.T) {
+	m := newTestModel()
+	reg := subagent.NewRegistry()
+	_ = reg.Register(subagent.SubAgentDefinition{Name: "explorer", Description: "d", SystemPrompt: "p"})
+	m.subAgentReg = reg
+	m.subAgentRunner = subagent.NewRunner(subagent.RunnerConfig{})
+	m2, _ := m.dispatchMention("@ghost 干活")
+	if !strings.Contains(strings.Join(m2.lines, "\n"), "未知子代理") {
+		t.Fatalf("应提示未知子代理: %q", strings.Join(m2.lines, "\n"))
+	}
+}
+
+func TestDispatchMentionEmptyTask(t *testing.T) {
+	m := newTestModel()
+	reg := subagent.NewRegistry()
+	_ = reg.Register(subagent.SubAgentDefinition{Name: "explorer", Description: "d", SystemPrompt: "p"})
+	m.subAgentReg = reg
+	m.subAgentRunner = subagent.NewRunner(subagent.RunnerConfig{})
+	m2, _ := m.dispatchMention("@explorer")
+	if !strings.Contains(strings.Join(m2.lines, "\n"), "请在 @explorer 后输入任务") {
+		t.Fatal("空任务应提示")
 	}
 }
 
