@@ -321,12 +321,8 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, textinput.Blink
 
 	case subAgentNotifyMsg:
-		// 仅展示提示，不 Drain（Drain 由 dispatch 在下次发送 prompt 前执行，确保结果注入 LLM）。
-		if m.subAgentMailbox != nil {
-			if n := m.subAgentMailbox.Pending(); n > 0 {
-				m.lines = append(m.lines, dimStyle.Render(fmt.Sprintf("  ✓ 后台子代理完成（%d 个结果待处理，将在下次对话注入）", n)))
-			}
-		}
+		// 后台子代理完成：即时将结果显示到对话区（用户立即可见），并缓存待下次注入 LLM。
+		m = m.harvestSubAgentResults()
 		return m, nil
 	}
 
@@ -586,12 +582,13 @@ func (m tuiModel) handleEvent(evt engine.Event) (tea.Model, tea.Cmd) {
 				m.subAgentLines = append(m.subAgentLines, line)
 				m.subAgentStreaming = false
 			case schema.SubAgentToolResult:
-				mark := "✓"
+				// 成功的工具结果不单独成行：上面的 `▸ 工具名(参数)` 已展示该调用，
+				// 再加一行 ✓ 既无信息量，又会在 maxSubAgentLines 上限下挤掉有用的调用行（"空 tool-calling"）。
+				// 仅在出错时提示，便于用户察觉子代理的工具失败。
 				if u.IsError {
-					mark = "✗"
+					m.subAgentLines = append(m.subAgentLines, fmt.Sprintf("[%s]   ✗ 工具执行失败", u.AgentName))
+					m.subAgentStreaming = false
 				}
-				m.subAgentLines = append(m.subAgentLines, fmt.Sprintf("[%s]   %s", u.AgentName, mark))
-				m.subAgentStreaming = false
 			case schema.SubAgentDone:
 				m.subAgentLines = append(m.subAgentLines, fmt.Sprintf("[%s] ✓ 完成", u.AgentName))
 				m.subAgentStreaming = false
@@ -942,6 +939,36 @@ func summarizeTool(name string, args json.RawMessage) string {
 // autoExecuting 续跑时，dispatch 由 EventDone handler 在 Elm Update 循环内调用，
 // 不存在并发问题（Bubbletea 保证 Update 是单线程的）。
 // 但 running 检查保留作为额外安全网，防止其他代码路径意外调用。
+// harvestSubAgentResults 排空后台子代理信箱：将每个已完成结果即时显示到对话区（scrollback，
+// 用户立即可见），并写入 pendingSubAgentInject 以便下次 dispatch 注入 LLM 上下文。
+// 从 subAgentNotifyMsg（即时显示）与 dispatch（兜底）两处调用——mailbox 仅被 Drain 一次，
+// 后续调用只是空转，从而实现"显示一次 + 注入一次"，二者不争抢 mailbox。
+func (m tuiModel) harvestSubAgentResults() tuiModel {
+	if m.subAgentMailbox == nil {
+		return m
+	}
+	for _, ct := range m.subAgentMailbox.Drain() {
+		status := "完成"
+		if ct.IsError {
+			status = "失败"
+		}
+		// 显示到对话区，用户即时可见。
+		// 注意：仅在非流式时追加——流式回复进行中（running）时，EventActionDelta 会以
+		// m.lines[:pendingReplyStart] 截断重写，追加到其后的行会被抹掉；此时只入注入缓冲，
+		// 结果仍会在下次 dispatch 注入 LLM，由模型回复体现。
+		if !m.running {
+			m.lines = append(m.lines, subAgentLineStyle.Render(fmt.Sprintf("✓ 后台子代理 %s %s：", ct.AgentName, status)))
+			for _, ln := range strings.Split(strings.TrimRight(ct.FinalText, "\n"), "\n") {
+				m.lines = append(m.lines, subAgentLineStyle.Render("  "+ln))
+			}
+		}
+		// 缓存以注入下次 LLM 请求。
+		m.pendingSubAgentInject = append(m.pendingSubAgentInject,
+			fmt.Sprintf("[后台子代理 %s %s]\n%s", ct.AgentName, status, ct.FinalText))
+	}
+	return m
+}
+
 func (m tuiModel) dispatch(prompt string) (tuiModel, tea.Cmd) {
 	if m.running {
 		return m, nil
@@ -971,21 +998,18 @@ func (m tuiModel) dispatch(prompt string) (tuiModel, tea.Cmd) {
 		prompt = sb.String() + "\n\n" + prompt
 		m.pendingShellOutput = nil
 	}
-	// 排空后台子代理信箱，将已完成结果前置注入 prompt（镜像上方 pendingShellOutput 机制）。
-	// Drain 线程安全，后台 goroutine 投递的结果在此处统一消费，注入后即从信箱移除。
-	if m.subAgentMailbox != nil {
-		if done := m.subAgentMailbox.Drain(); len(done) > 0 {
-			var b strings.Builder
-			b.WriteString("[后台子代理已完成，结果如下]\n")
-			for _, ct := range done {
-				status := "完成"
-				if ct.IsError {
-					status = "失败"
-				}
-				fmt.Fprintf(&b, "- 子代理 %s（%s）: %s\n", ct.AgentName, status, ct.FinalText)
-			}
-			prompt = b.String() + "\n" + prompt
+	// 兜底收获后台子代理结果（若 notify 已处理则为空转），再将待注入结果前置拼接到 prompt。
+	// 结果已在完成时显示到对话区，此处仅负责把它们注入 LLM 上下文，注入后清空缓冲。
+	m = m.harvestSubAgentResults()
+	if len(m.pendingSubAgentInject) > 0 {
+		var b strings.Builder
+		b.WriteString("[以下是先前后台子代理的执行结果，供你参考]\n")
+		for _, blk := range m.pendingSubAgentInject {
+			b.WriteString(blk)
+			b.WriteString("\n")
 		}
+		prompt = b.String() + "\n" + prompt
+		m.pendingSubAgentInject = nil
 	}
 	m.lines = append(m.lines, assistantStyle.Render("◆ harness9:"), "")
 	m.pendingReplyStart = len(m.lines) - 1
