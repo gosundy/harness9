@@ -260,7 +260,7 @@ type tuiModel struct {
 	subAgentStreaming bool
 	// pendingSubAgentInject 缓存已收获、待注入下次 LLM 请求的后台子代理结果块。
 	// 后台子代理完成时（subAgentNotifyMsg）即时显示到 scrollback 并写入此缓冲；
-	// dispatch() 在下次发送 prompt 前将其前置注入并清空（展示与注入分离，避免与 mailbox 双重消费）。
+	// dispatch() 在下次发送 prompt 前将其前置注入并清空（展示与注入分离，避免与 TaskTracker 双重消费）。
 	pendingSubAgentInject []string
 
 	// shellMode 为 true 时表示输入框当前以 "!" 开头，处于 Shell 执行模式。

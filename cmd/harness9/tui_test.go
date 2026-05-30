@@ -1084,3 +1084,54 @@ func TestFlushPendingThinking_UpdatesPendingReplyStart(t *testing.T) {
 		t.Errorf("pendingReply = %q, want %q", m.pendingReply, "answer")
 	}
 }
+
+// TestHandleTaskPanelKeyNavigation 验证任务面板的列表/详情导航：
+// ↑↓ 光标夹紧、Enter 进详情、Esc 列表态关闭/详情态返回。
+func TestHandleTaskPanelKeyNavigation(t *testing.T) {
+	tr := subagent.NewTaskTracker()
+	id1 := tr.Start("a", "p1")
+	_ = tr.Start("b", "p2")
+
+	m := newTestModel()
+	m.subAgentTracker = tr
+	m.taskPanelMode = true
+
+	// 列表态：↓ 到 1，再 ↓ 夹紧在 1（共 2 项）。
+	mm, _ := m.handleTaskPanelKey(tea.KeyMsg{Type: tea.KeyDown})
+	m = mm.(tuiModel)
+	if m.taskPanelCursor != 1 {
+		t.Fatalf("KeyDown cursor=%d, want 1", m.taskPanelCursor)
+	}
+	mm, _ = m.handleTaskPanelKey(tea.KeyMsg{Type: tea.KeyDown})
+	m = mm.(tuiModel)
+	if m.taskPanelCursor != 1 {
+		t.Fatalf("KeyDown 应夹紧在 1, 得 %d", m.taskPanelCursor)
+	}
+	// ↑ 回到 0。
+	mm, _ = m.handleTaskPanelKey(tea.KeyMsg{Type: tea.KeyUp})
+	m = mm.(tuiModel)
+	if m.taskPanelCursor != 0 {
+		t.Fatalf("KeyUp cursor=%d, want 0", m.taskPanelCursor)
+	}
+	// Enter 进详情：cursor=0 → id1。
+	mm, _ = m.handleTaskPanelKey(tea.KeyMsg{Type: tea.KeyEnter})
+	m = mm.(tuiModel)
+	if m.taskDetailID != id1 {
+		t.Fatalf("Enter 应进入 id1 详情, 得 %q", m.taskDetailID)
+	}
+	// 详情态 Esc 返回列表。
+	mm, _ = m.handleTaskPanelKey(tea.KeyMsg{Type: tea.KeyEsc})
+	m = mm.(tuiModel)
+	if m.taskDetailID != "" {
+		t.Fatal("详情态 Esc 应返回列表（taskDetailID 清空）")
+	}
+	if !m.taskPanelMode {
+		t.Fatal("详情态 Esc 不应关闭面板")
+	}
+	// 列表态 Esc 关闭面板。
+	mm, _ = m.handleTaskPanelKey(tea.KeyMsg{Type: tea.KeyEsc})
+	m = mm.(tuiModel)
+	if m.taskPanelMode {
+		t.Fatal("列表态 Esc 应关闭面板")
+	}
+}

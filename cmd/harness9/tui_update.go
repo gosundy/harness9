@@ -1375,7 +1375,14 @@ func (m tuiModel) handleTaskPanelKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.taskDetailScroll--
 		}
 	case tea.KeyDown:
-		m.taskDetailScroll++
+		// 向下滚动，但夹住在最后一行——避免越滚越空（taskDetailScroll 无界增长后视图全空）。
+		if m.subAgentTracker != nil {
+			if d, ok := m.subAgentTracker.Get(m.taskDetailID); ok {
+				if maxScroll := len(formatTaskLog(d)) - 1; m.taskDetailScroll < maxScroll {
+					m.taskDetailScroll++
+				}
+			}
+		}
 	case tea.KeyEsc:
 		m.taskDetailID = ""
 	case tea.KeyCtrlT:
