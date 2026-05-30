@@ -190,7 +190,6 @@ Flags:
 	}
 
 	subAgentMailbox := subagent.NewMailbox()
-	_ = subAgentMailbox // TODO(task13): 传入 RunTUI
 	subAgentRunner := subagent.NewRunner(subagent.RunnerConfig{
 		BaseTools:          subAgentBaseTools,
 		SharedHooks:        []hooks.ToolHook{dangerHook, offloadHook},
@@ -240,7 +239,7 @@ Flags:
 
 	if term.IsTerminal(os.Stdin.Fd()) {
 		log.Print(logfmt.FormatMsg("main", fmt.Sprintf("harness9 TUI 启动 │ workDir=%s", workDir)))
-		if err := RunTUI(ctx, eng, mgr, sess, skillsIndex, todoStore, workDir, modelName); err != nil {
+		if err := RunTUI(ctx, eng, mgr, sess, skillsIndex, todoStore, subAgentMailbox, workDir, modelName); err != nil {
 			log.Fatal(logfmt.FormatMsg("main", fmt.Sprintf("TUI 退出: %v", err)))
 		}
 	} else {

@@ -174,6 +174,19 @@ func (m tuiModel) renderToolProgress() string {
 		dimStyle.Render(fmt.Sprintf("  [%s]", elapsed))
 }
 
+// renderSubAgentProgress 渲染当前活跃子代理的流式进度块（暗青色缩进行）。
+// 仅在 len(m.subAgentLines) > 0 时由 View() 调用；每行已在 EventSubAgent 处理时带上 [agent] 前缀。
+func (m tuiModel) renderSubAgentProgress() string {
+	var sb strings.Builder
+	for i, line := range m.subAgentLines {
+		if i > 0 {
+			sb.WriteByte('\n')
+		}
+		sb.WriteString("  " + subAgentLineStyle.Render(line))
+	}
+	return sb.String()
+}
+
 // renderStatusBar 渲染常驻状态栏（model 名 + mode + workdir + session 信息）。
 // 宽度充足时展示完整 session ID；窄终端（< 120 列）时截断为前 8 位加 "…"。
 func (m tuiModel) renderStatusBar() string {
@@ -430,6 +443,10 @@ func (m tuiModel) View() string {
 		scrollH := m.scrollHeight()
 		sb.WriteString(m.renderConversation(scrollH))
 		sb.WriteByte('\n')
+		if len(m.subAgentLines) > 0 {
+			sb.WriteString(m.renderSubAgentProgress())
+			sb.WriteByte('\n')
+		}
 		if m.running && m.currentTool != "" {
 			sb.WriteString(m.renderToolProgress())
 			sb.WriteByte('\n')

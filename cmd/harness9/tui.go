@@ -17,6 +17,7 @@ import (
 	"github.com/harness9/internal/memory"
 	"github.com/harness9/internal/planning"
 	"github.com/harness9/internal/skills"
+	"github.com/harness9/internal/subagent"
 )
 
 // package-level lipgloss 样式：在 View() 外定义，避免每帧重复分配。
@@ -69,6 +70,9 @@ var (
 	tokenOKStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("10")) // < 50%: 绿
 	tokenWarnStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("11")) // 50-80%: 黄
 	tokenHighStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("9"))  // > 80%: 红
+
+	// 子代理流式进度样式 — 暗青色，缩进展示，区别于正文与工具进度
+	subAgentLineStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("66"))
 
 	// Thinking 块样式 — 深灰色，视觉上明显弱于正文
 	thinkingHeaderStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("238")).Italic(true) // « thinking »
@@ -239,6 +243,13 @@ type tuiModel struct {
 	// dispatch() 消费后置为 nil，避免重复注入。
 	pendingShellOutput []string
 
+	// subAgentMailbox 是后台子代理结果信箱。后台 goroutine 完成后通过 Deliver 投递，
+	// dispatch() 在下次向 LLM 发送消息前通过 Drain 排空并前置注入 prompt（镜像 pendingShellOutput 机制）。
+	subAgentMailbox *subagent.Mailbox
+	// subAgentLines 缓存当前活跃子代理的流式进度行（由 EventSubAgent 追加），
+	// 渲染为对话区下方的暗青色缩进块；新一轮用户消息开始时重置。
+	subAgentLines []string
+
 	// shellMode 为 true 时表示输入框当前以 "!" 开头，处于 Shell 执行模式。
 	// 由 Update() 中的输入实时检测逻辑驱动（非 running 状态下每次按键后检测），
 	// View 层据此切换状态栏背景色（深绿）、输入区徽章（[SHELL]）、footer 提示文字。
@@ -264,7 +275,7 @@ type pendingToolInfo struct {
 }
 
 // newTUIModel 构造已初始化的 tuiModel：输入框聚焦，spinner 使用 Dot 样式。
-func newTUIModel(eng *engine.AgentEngine, idx *skills.Index, mgr *memory.Manager, sess memory.Session, todoStore *planning.TodoStore, outerCtx context.Context, workDir, modelName string) tuiModel {
+func newTUIModel(eng *engine.AgentEngine, idx *skills.Index, mgr *memory.Manager, sess memory.Session, todoStore *planning.TodoStore, mailbox *subagent.Mailbox, outerCtx context.Context, workDir, modelName string) tuiModel {
 	sp := spinner.New()
 	sp.Spinner = spinner.Dot
 	sp.Style = lipgloss.NewStyle().Foreground(lipgloss.Color("11"))
@@ -291,6 +302,7 @@ func newTUIModel(eng *engine.AgentEngine, idx *skills.Index, mgr *memory.Manager
 		planReviewing:     false,
 		pendingTools:      make(map[string]pendingToolInfo),
 		thinkingLineStart: -1, // -1 = 本轮尚未开始 thinking 块
+		subAgentMailbox:   mailbox,
 	}
 	if sess != nil {
 		m.sessionID = sess.SessionID()
@@ -306,13 +318,13 @@ func (m tuiModel) Init() tea.Cmd {
 
 // RunTUI 以 AltScreen 模式启动 Bubbletea 程序。
 // 用户按 Ctrl-C/Ctrl-D（空闲时）退出后返回。
-func RunTUI(ctx context.Context, eng *engine.AgentEngine, mgr *memory.Manager, sess memory.Session, idx *skills.Index, todoStore *planning.TodoStore, workDir, modelName string) error {
+func RunTUI(ctx context.Context, eng *engine.AgentEngine, mgr *memory.Manager, sess memory.Session, idx *skills.Index, todoStore *planning.TodoStore, mailbox *subagent.Mailbox, workDir, modelName string) error {
 	// TUI 独占终端，将内部日志重定向到静默，避免污染 AltScreen 输出。
 	// 退出后恢复原 Writer，避免影响同进程其他逻辑（如测试框架）。
 	origWriter := log.Writer()
 	log.SetOutput(io.Discard)
 	defer log.SetOutput(origWriter)
-	m := newTUIModel(eng, idx, mgr, sess, todoStore, ctx, workDir, modelName)
+	m := newTUIModel(eng, idx, mgr, sess, todoStore, mailbox, ctx, workDir, modelName)
 	p := tea.NewProgram(m, tea.WithAltScreen(), tea.WithContext(ctx), tea.WithMouseCellMotion())
 	_, err := p.Run()
 	return err

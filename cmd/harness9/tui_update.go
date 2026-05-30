@@ -57,6 +57,10 @@ const (
 	// 确保大输出不会以完整形式长期驻留内存，也不会使 LLM 上下文过度膨胀。
 	// 设为 2048 以留出足够上下文空间容纳多条命令记录。
 	maxShellContextLen = 2048
+
+	// maxSubAgentLines 是 subAgentLines 流式进度缓冲保留的最大行数。
+	// 长时间运行的子代理会产生大量增量行，仅保留最近若干行用于实时进度展示。
+	maxSubAgentLines = 12
 )
 
 // builtinCmds 是 TUI 内置的斜杠命令列表（不含 /），用于 Tab 补全和提示。
@@ -224,6 +228,10 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 			// 显示用户消息
 			m.lines = append(m.lines, userMsgStyle.Render("▶ You: ")+raw)
+			// 新一轮用户消息开始：清空上一轮残留的子代理流式进度行，避免陈旧内容滞留。
+			// 仅在 LLM 路径（含 /new、/resume、/plan、普通 prompt）重置；autoExecuting 续跑走 dispatch
+			// 不经过此处，因此续跑期间子代理进度可跨 EventDone 保留。
+			m.subAgentLines = nil
 
 			// 处理其他内置命令
 			if raw == "/new" {
@@ -536,6 +544,29 @@ func (m tuiModel) handleEvent(evt engine.Event) (tea.Model, tea.Cmd) {
 		}
 		return m, readNextEvent(m.eventCh)
 
+	case engine.EventSubAgent:
+		if u, ok := evt.Data.(schema.SubAgentUpdate); ok {
+			switch u.Kind {
+			case schema.SubAgentStart:
+				m.subAgentLines = append(m.subAgentLines, fmt.Sprintf("[%s] 子代理启动…", u.AgentName))
+			case schema.SubAgentToolStart:
+				m.subAgentLines = append(m.subAgentLines, fmt.Sprintf("[%s] ▸ %s", u.AgentName, u.ToolName))
+			case schema.SubAgentDelta:
+				if s := strings.TrimSpace(u.Text); s != "" {
+					m.subAgentLines = append(m.subAgentLines, fmt.Sprintf("[%s] %s", u.AgentName, s))
+				}
+			case schema.SubAgentDone:
+				m.subAgentLines = append(m.subAgentLines, fmt.Sprintf("[%s] ✓ 完成", u.AgentName))
+			case schema.SubAgentError:
+				m.subAgentLines = append(m.subAgentLines, fmt.Sprintf("[%s] ✗ %s", u.AgentName, u.Text))
+			}
+			// 限制缓冲行数，避免长时间运行的子代理无界增长（仅保留最近 maxSubAgentLines 行）。
+			if len(m.subAgentLines) > maxSubAgentLines {
+				m.subAgentLines = m.subAgentLines[len(m.subAgentLines)-maxSubAgentLines:]
+			}
+		}
+		return m, readNextEvent(m.eventCh)
+
 	case engine.EventCompaction:
 		data, _ := evt.Data.(engine.CompactionData)
 		line := dimStyle.Render(fmt.Sprintf("  ⚡ 上下文已压缩 — %s → %s tokens（%d → %d 条消息）",
@@ -556,7 +587,10 @@ func (m tuiModel) handleEvent(evt engine.Event) (tea.Model, tea.Cmd) {
 func (m tuiModel) scrollHeight() int {
 	reserved := 3 // StatusBar + PromptInput + Footer
 	if m.running && m.currentTool != "" {
-		reserved = 4 // + ToolProgress
+		reserved++ // + ToolProgress
+	}
+	if n := len(m.subAgentLines); n > 0 {
+		reserved += n // + 子代理进度块（每行占一行）
 	}
 	h := m.height - reserved
 	if h < 1 {
@@ -897,6 +931,22 @@ func (m tuiModel) dispatch(prompt string) (tuiModel, tea.Cmd) {
 		prompt = sb.String() + "\n\n" + prompt
 		m.pendingShellOutput = nil
 	}
+	// 排空后台子代理信箱，将已完成结果前置注入 prompt（镜像上方 pendingShellOutput 机制）。
+	// Drain 线程安全，后台 goroutine 投递的结果在此处统一消费，注入后即从信箱移除。
+	if m.subAgentMailbox != nil {
+		if done := m.subAgentMailbox.Drain(); len(done) > 0 {
+			var b strings.Builder
+			b.WriteString("[后台子代理已完成，结果如下]\n")
+			for _, ct := range done {
+				status := "完成"
+				if ct.IsError {
+					status = "失败"
+				}
+				fmt.Fprintf(&b, "- 子代理 %s（%s）: %s\n", ct.AgentName, status, ct.FinalText)
+			}
+			prompt = b.String() + "\n" + prompt
+		}
+	}
 	m.lines = append(m.lines, assistantStyle.Render("◆ harness9:"), "")
 	m.pendingReplyStart = len(m.lines) - 1
 	m.pendingReply = ""
@@ -1199,8 +1249,9 @@ func (m tuiModel) handleApprovalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.approvalCursor = 4
 			return m, nil
 		case tea.KeyBackspace, tea.KeyDelete:
-			if len(m.approvalFeedback) > 0 {
-				m.approvalFeedback = m.approvalFeedback[:len(m.approvalFeedback)-1]
+			// 使用 rune 安全删除最后一个字符，避免在多字节 UTF-8 字符中间截断。
+			if runes := []rune(m.approvalFeedback); len(runes) > 0 {
+				m.approvalFeedback = string(runes[:len(runes)-1])
 			}
 		default:
 			if msg.Runes != nil {
