@@ -1,17 +1,17 @@
-// model_limits.go — model context window registry and limit lookup.
+// model_limits.go — 模型上下文窗口注册表与限制查询。
 package provider
 
 import "strings"
 
-// ModelLimits stores the context window and max output tokens for a model (in tokens).
+// ModelLimits 存储单个模型的上下文窗口和最大输出 token 数。
 type ModelLimits struct {
 	ContextTokens int
 	OutputTokens  int
 }
 
-// knownModels maps bare model names (no provider prefix) to their limits.
-// Sources: OpenAI API docs, Anthropic API docs, model provider pages.
-// Last updated: 2026-05.
+// knownModels 以裸模型名（不含 provider 前缀）为键，存储已知模型的上下文限制。
+// 数据来源：OpenAI API 文档、Anthropic API 文档、各模型 provider 官网。
+// 最后更新：2026-05。
 var knownModels = map[string]ModelLimits{
 	// Anthropic Claude 4.x
 	"claude-opus-4-7":           {ContextTokens: 200_000, OutputTokens: 32_000},
@@ -43,13 +43,12 @@ var knownModels = map[string]ModelLimits{
 	"gemini-2.5-pro":   {ContextTokens: 1_048_576, OutputTokens: 65_536},
 }
 
-// defaultLimits is used for any model not found in knownModels.
-// 256K is a conservative fallback (HermesAgent pattern).
+// defaultLimits 用于 knownModels 中未找到的模型，256K 是保守回退值（与 HermesAgent 策略一致）。
 var defaultLimits = ModelLimits{ContextTokens: 256_000, OutputTokens: 8_192}
 
-// GetModelLimits returns context window limits for a model name.
-// It strips provider prefixes (e.g. "openai/gpt-4o" → "gpt-4o") before lookup.
-// Unknown models return a 256K conservative fallback.
+// GetModelLimits 返回指定模型名称的上下文窗口限制。
+// 查找前自动剥离 provider 前缀（如 "openai/gpt-4o" → "gpt-4o"）。
+// 未知模型返回 256K 保守回退值。
 func GetModelLimits(modelName string) ModelLimits {
 	bare := modelName
 	if idx := strings.LastIndex(modelName, "/"); idx >= 0 {

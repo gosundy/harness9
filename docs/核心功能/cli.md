@@ -303,4 +303,4 @@ LLM_MODEL=anthropic/claude-sonnet-4-5
 
 **Q: 每次对话是否有记忆？**
 
-当前版本每次 `harness9>` 输入都是独立的上下文，无跨 Prompt 的持久历史。会话记忆功能（memory 包）在后续迭代中提供。
+有。harness9 在同一进程会话内维护完整的对话历史（通过 `memory.Session` + SQLite 持久化），每次 `harness9>` 输入都追加到当前会话上下文，Agent 可引用之前所有轮次的对话和工具结果。进程重启后需通过 TUI 的 `/resume` 命令或在代码中显式调用 `mgr.OpenSession(id)` 恢复历史会话；CLI REPL 启动时始终创建新会话。

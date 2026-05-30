@@ -1,3 +1,5 @@
+// Package tools — BaseTool 接口定义。
+// 本文件定义 harness9 所有内置工具和用户自定义工具必须实现的 BaseTool 接口契约。
 package tools
 
 import (

@@ -1,3 +1,4 @@
+// Package planning 实现 harness9 的规划模块：PlanMode（执行模式枚举）和 TodoStore（线程安全任务列表）。
 package planning
 
 // PlanMode 表示 harness9 的执行模式。

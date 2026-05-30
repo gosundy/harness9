@@ -94,7 +94,7 @@ func (c *TokenBudgetCompactor) Compact(msgs []schema.Message) []schema.Message {
 
 	tail := rest[len(rest)-minTail:]
 
-	// Shrink head one message at a time until budget is satisfied or head is empty.
+	// 逐条剥离头部旧消息，直到 token 预算满足或头部清空。
 	for headEnd := len(rest) - minTail; headEnd > 0; headEnd-- {
 		candidate := make([]schema.Message, 0, 1+headEnd+minTail)
 		candidate = append(candidate, msgs[0])
@@ -105,7 +105,7 @@ func (c *TokenBudgetCompactor) Compact(msgs []schema.Message) []schema.Message {
 		}
 	}
 
-	// Head fully removed — system + tail only.
+	// 头部完全移除：仅保留 system 消息 + 尾部最近消息。
 	result := make([]schema.Message, 0, 1+len(tail))
 	result = append(result, msgs[0])
 	result = append(result, tail...)
@@ -126,13 +126,13 @@ func (c *TokenBudgetCompactor) minTail() int {
 	return c.MinTailMessages
 }
 
-// repairOrphanedToolPairs executes bidirectional tool-pair integrity repair after compaction.
-//  1. Removes orphaned user tool_result messages with no matching assistant tool_call
-//  2. Inserts stub user tool_result for any assistant tool_call missing its response
+// repairOrphanedToolPairs 在压缩后执行双向工具对完整性修复（HermesAgent 模式）：
+//  1. 删除无对应 tool_call 的孤立 user tool_result 消息
+//  2. 为缺少响应的 assistant tool_call 插入占位 user tool_result
 //
-// Required for Anthropic Messages API compliance: tool_call / tool_result must appear in pairs.
+// Anthropic Messages API 要求 tool_call 与 tool_result 必须成对出现，违反此约束会导致 API 400 错误。
 func repairOrphanedToolPairs(msgs []schema.Message) []schema.Message {
-	// Collect IDs of all tool_calls issued by assistant.
+	// 收集所有 assistant 发起的 tool_call ID 集合。
 	calledIDs := make(map[string]bool)
 	for _, m := range msgs {
 		if m.Role == schema.RoleAssistant {
@@ -141,7 +141,7 @@ func repairOrphanedToolPairs(msgs []schema.Message) []schema.Message {
 			}
 		}
 	}
-	// Collect IDs that already have a tool_result.
+	// 收集所有已有 tool_result 的 ID 集合。
 	resultIDs := make(map[string]bool)
 	for _, m := range msgs {
 		if m.ToolCallID != "" {
@@ -151,18 +151,18 @@ func repairOrphanedToolPairs(msgs []schema.Message) []schema.Message {
 
 	result := make([]schema.Message, 0, len(msgs))
 	for _, m := range msgs {
-		// Drop orphaned tool_result (no matching tool_call).
+		// 删除孤立的 tool_result（无对应的 tool_call）。
 		if m.ToolCallID != "" && !calledIDs[m.ToolCallID] {
 			continue
 		}
 		result = append(result, m)
-		// Insert stub for tool_call missing its result.
+		// 为缺少 tool_result 的 tool_call 插入占位消息。
 		if m.Role == schema.RoleAssistant && len(m.ToolCalls) > 0 {
 			for _, tc := range m.ToolCalls {
 				if !resultIDs[tc.ID] {
 					result = append(result, schema.Message{
 						Role:       schema.RoleUser,
-						Content:    "[tool result unavailable: context was compacted]",
+						Content:    "[工具结果不可用：上下文已被压缩]",
 						ToolCallID: tc.ID,
 					})
 				}

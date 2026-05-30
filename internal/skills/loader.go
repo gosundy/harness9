@@ -1,7 +1,9 @@
 package skills
 
 import (
+	"errors"
 	"fmt"
+	"io/fs"
 	"log"
 	"os"
 	"path/filepath"
@@ -22,7 +24,7 @@ import (
 //	    └── SKILL.md
 func LoadSkills(skillsDir string) (*Index, error) {
 	entries, err := os.ReadDir(skillsDir)
-	if os.IsNotExist(err) {
+	if errors.Is(err, fs.ErrNotExist) {
 		return &Index{}, nil
 	}
 	if err != nil {
@@ -37,7 +39,7 @@ func LoadSkills(skillsDir string) (*Index, error) {
 		filePath := filepath.Join(skillsDir, entry.Name(), "SKILL.md")
 		data, err := os.ReadFile(filePath)
 		if err != nil {
-			if os.IsNotExist(err) {
+			if errors.Is(err, fs.ErrNotExist) {
 				log.Print(logfmt.FormatMsg("skills", fmt.Sprintf("跳过 %s: 子目录缺少 SKILL.md", entry.Name())))
 			} else {
 				log.Print(logfmt.FormatMsg("skills", fmt.Sprintf("跳过 %s: 读取 SKILL.md 失败: %v", entry.Name(), err)))

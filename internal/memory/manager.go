@@ -1,3 +1,5 @@
+// Package memory — Manager：SQLite 数据库连接持有者与会话生命周期管理。
+// 本文件实现 Manager 类型，整个进程共享一个实例，负责会话的创建、查询、删除以及级联 GC。
 package memory
 
 import (
