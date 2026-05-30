@@ -138,12 +138,9 @@ func (r *Runner) Run(ctx context.Context, def SubAgentDefinition, prompt string,
 		}()
 	}
 
+	// 进度去向由调用方 ctx 决定：前台为父 TUI 的 RunStream sink；后台由 TaskTool 注入"写 TaskTracker"的 sink
+	// （后台 sink 写内存缓冲、不碰父 channel，故无 send-on-closed-channel 风险）。
 	progress := hooks.SubAgentProgressFromContext(ctx)
-	if background {
-		// 后台子代理脱离父 turn 生命周期运行：父 RunStream 的事件 channel 届时可能已关闭，
-		// 继续向其发送会触发 send-on-closed-channel panic。后台进度改由 Mailbox 投递，故此处不向父进度 sink 发送。
-		progress = nil
-	}
 	emit := func(u schema.SubAgentUpdate) {
 		u.AgentName = def.Name
 		if progress != nil {

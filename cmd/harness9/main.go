@@ -192,7 +192,7 @@ Flags:
 		log.Print(logfmt.FormatMsg("main", fmt.Sprintf("加载文件式子代理失败: %v", err)))
 	}
 
-	subAgentMailbox := subagent.NewMailbox()
+	subAgentTracker := subagent.NewTaskTracker()
 	subAgentRunner := subagent.NewRunner(subagent.RunnerConfig{
 		BaseTools:          subAgentBaseTools,
 		SharedHooks:        []hooks.ToolHook{dangerHook, offloadHook},
@@ -218,7 +218,7 @@ Flags:
 		BaseCtx: ctx,
 	})
 
-	taskTool := subagent.NewTaskTool(subAgentReg, subAgentRunner, subAgentMailbox)
+	taskTool := subagent.NewTaskTool(subAgentReg, subAgentRunner, subAgentTracker)
 	if err := registry.Register(taskTool); err != nil {
 		log.Print(logfmt.FormatMsg("main", fmt.Sprintf("注册 task 工具失败: %v", err)))
 	}
@@ -243,7 +243,7 @@ Flags:
 
 	if term.IsTerminal(os.Stdin.Fd()) {
 		log.Print(logfmt.FormatMsg("main", fmt.Sprintf("harness9 TUI 启动 │ workDir=%s", workDir)))
-		if err := RunTUI(ctx, eng, mgr, sess, skillsIndex, todoStore, subAgentMailbox, workDir, modelName); err != nil {
+		if err := RunTUI(ctx, eng, mgr, sess, skillsIndex, todoStore, subAgentTracker, workDir, modelName); err != nil {
 			log.Fatal(logfmt.FormatMsg("main", fmt.Sprintf("TUI 退出: %v", err)))
 		}
 	} else {

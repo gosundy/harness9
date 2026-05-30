@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/harness9/internal/hooks"
 	"github.com/harness9/internal/memory"
 	"github.com/harness9/internal/provider"
 	"github.com/harness9/internal/provider/providertest"
@@ -27,7 +28,7 @@ func newTaskToolForTest(t *testing.T, p provider.LLMProvider) *TaskTool {
 		compactorFor: func(provider.LLMProvider, int) memory.Compactor { return nil },
 		baseCtx:      context.Background(),
 	}
-	return NewTaskTool(reg, runner, NewMailbox())
+	return NewTaskTool(reg, runner, NewTaskTracker())
 }
 
 func TestTaskToolDefinitionEnumeratesAgents(t *testing.T) {
@@ -89,15 +90,12 @@ func TestTaskToolBackgroundReturnsRunning(t *testing.T) {
 	}
 }
 
-// TestTaskToolConcurrentBackgroundUniqueIDs 回归测试 Bug2：并发 background 调用下
-// idSeq 原子自增，返回的 running 句柄必须互不重复且非空（-race 下验证无数据竞争）。
 func TestTaskToolConcurrentBackgroundUniqueIDs(t *testing.T) {
 	mock := providertest.NewMockWithCallback(func(_ []schema.Message, _ []schema.ToolDefinition) schema.Message {
 		return schema.Message{Role: schema.RoleAssistant, Content: "ok"}
 	})
 	tt := newTaskToolForTest(t, mock)
 	args, _ := json.Marshal(map[string]any{"subagent_type": "reviewer", "prompt": "x", "background": true})
-
 	const n = 8
 	var wg sync.WaitGroup
 	ids := make([]string, n)
@@ -114,12 +112,11 @@ func TestTaskToolConcurrentBackgroundUniqueIDs(t *testing.T) {
 		}(i)
 	}
 	wg.Wait()
-	// 收尾：等待后台 goroutine 完成投递，避免测试结束时的悬挂 goroutine。
 	deadline := time.After(5 * time.Second)
-	for tt.mailbox.Pending() < n {
+	for tt.tracker.DoneCount() < n {
 		select {
 		case <-deadline:
-			t.Fatalf("后台任务未在期限内全部完成，Pending=%d", tt.mailbox.Pending())
+			t.Fatalf("后台任务未在期限内全部完成，Done=%d", tt.tracker.DoneCount())
 		default:
 			time.Sleep(time.Millisecond)
 		}
@@ -127,8 +124,38 @@ func TestTaskToolConcurrentBackgroundUniqueIDs(t *testing.T) {
 	seen := map[string]bool{}
 	for _, out := range ids {
 		if out == "" || seen[out] {
-			t.Fatalf("后台任务返回了空或重复的 running 句柄: %q (all=%v)", out, ids)
+			t.Fatalf("后台返回了空或重复的 running 句柄: %q (all=%v)", out, ids)
 		}
 		seen[out] = true
+	}
+}
+
+// 后台安全：即使调用方 ctx 携带"父 sink"，后台也绝不调用它（避免向已关闭 channel 发送）；进度只写入 tracker。
+func TestTaskToolBackgroundDoesNotUseParentSink(t *testing.T) {
+	mock := providertest.NewMockWithCallback(func(_ []schema.Message, _ []schema.ToolDefinition) schema.Message {
+		return schema.Message{Role: schema.RoleAssistant, Content: "bg-final"}
+	})
+	tt := newTaskToolForTest(t, mock)
+	var parentCalls int
+	parentCtx := hooks.WithSubAgentProgress(context.Background(), func(schema.SubAgentUpdate) { parentCalls++ })
+	args, _ := json.Marshal(map[string]any{"subagent_type": "reviewer", "prompt": "x", "background": true})
+	if _, err := tt.Execute(parentCtx, args); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.After(5 * time.Second)
+	for tt.tracker.DoneCount() < 1 {
+		select {
+		case <-deadline:
+			t.Fatal("后台任务未完成")
+		default:
+			time.Sleep(time.Millisecond)
+		}
+	}
+	if parentCalls != 0 {
+		t.Fatalf("后台绝不应调用父 sink，实际 %d 次", parentCalls)
+	}
+	list := tt.tracker.List()
+	if len(list) != 1 || list[0].LogLines == 0 {
+		t.Fatalf("tracker 应捕获后台日志: %+v", list)
 	}
 }

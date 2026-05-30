@@ -5,30 +5,27 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
-	"sync/atomic"
 
+	"github.com/harness9/internal/hooks"
 	"github.com/harness9/internal/schema"
 )
 
 // TaskTool 实现 tools.BaseTool（结构类型隐式满足，无需 import tools）。
-// 由 main.go 注册进父代理 registry，是主代理委派子代理的唯一入口。
 type TaskTool struct {
 	reg     *Registry
 	runner  *Runner
-	mailbox *Mailbox
-	idSeq   atomic.Int64 // 后台任务 ID 序号（并发 background 调用下原子自增）
+	tracker *TaskTracker
 }
 
 // NewTaskTool 创建 task 工具。
-func NewTaskTool(reg *Registry, runner *Runner, mailbox *Mailbox) *TaskTool {
-	return &TaskTool{reg: reg, runner: runner, mailbox: mailbox}
+func NewTaskTool(reg *Registry, runner *Runner, tracker *TaskTracker) *TaskTool {
+	return &TaskTool{reg: reg, runner: runner, tracker: tracker}
 }
 
 // Name 返回工具标识符 "task"。
 func (t *TaskTool) Name() string { return "task" }
 
-// Definition 动态生成工具定义：subagent_type 枚举所有已注册子代理，
-// description 拼接各子代理用途，作为 LLM 的调度依据。
+// Definition 动态生成工具定义：subagent_type 枚举所有已注册子代理，description 拼接各用途。
 func (t *TaskTool) Definition() schema.ToolDefinition {
 	defs := t.reg.List()
 	names := make([]string, 0, len(defs))
@@ -38,7 +35,6 @@ func (t *TaskTool) Definition() schema.ToolDefinition {
 		names = append(names, d.Name)
 		fmt.Fprintf(&sb, "- %s: %s\n", d.Name, d.Description)
 	}
-
 	return schema.ToolDefinition{
 		Name:        "task",
 		Description: sb.String(),
@@ -46,13 +42,11 @@ func (t *TaskTool) Definition() schema.ToolDefinition {
 			"type": "object",
 			"properties": map[string]any{
 				"subagent_type": map[string]any{
-					"type":        "string",
-					"enum":        names,
+					"type": "string", "enum": names,
 					"description": "要调用的子代理类型名称",
 				},
 				"description": map[string]any{
-					"type":        "string",
-					"description": "任务的简短标题（3-5 词，用于 UI 展示）",
+					"type": "string", "description": "任务的简短标题（3-5 词，用于 UI 展示）",
 				},
 				"prompt": map[string]any{
 					"type":        "string",
@@ -93,23 +87,23 @@ func (t *TaskTool) Execute(ctx context.Context, args json.RawMessage) (string, e
 	}
 
 	if a.Background {
-		taskID := fmt.Sprintf("task-%s-%d", def.Name, t.idSeq.Add(1))
+		taskID := t.tracker.Start(def.Name, a.Prompt)
 		go func() {
 			defer func() {
 				if rec := recover(); rec != nil {
-					t.mailbox.Deliver(CompletedTask{TaskID: taskID, AgentName: def.Name, IsError: true,
-						FinalText: fmt.Sprintf("子代理后台执行 panic: %v", rec)})
+					t.tracker.Finish(taskID, fmt.Sprintf("子代理后台执行 panic: %v", rec), true)
 				}
 			}()
-			res, err := t.runner.Run(ctx, def, a.Prompt, true)
-			ct := CompletedTask{TaskID: taskID, AgentName: def.Name}
+			// 关键安全点：从 context.Background() 构造 bgCtx，只注入"写 tracker"的 sink，
+			// 绝不复用父 ctx 的 progress sink（其 channel 会在父 turn 结束后关闭，写入即 panic）。
+			sink := func(u schema.SubAgentUpdate) { t.tracker.AppendLog(taskID, u) }
+			bgCtx := hooks.WithSubAgentProgress(context.Background(), sink)
+			res, err := t.runner.Run(bgCtx, def, a.Prompt, true)
 			if err != nil {
-				ct.IsError = true
-				ct.FinalText = err.Error()
+				t.tracker.Finish(taskID, err.Error(), true)
 			} else {
-				ct.FinalText = res.FinalText
+				t.tracker.Finish(taskID, res.FinalText, false)
 			}
-			t.mailbox.Deliver(ct)
 		}()
 		return fmt.Sprintf(`<task id=%q state="running"/>`, taskID), nil
 	}

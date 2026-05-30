@@ -7,6 +7,14 @@ import (
 	"github.com/harness9/internal/schema"
 )
 
+// CompletedTask 是一个已完成后台子代理任务的结果（供 DrainCompleted 注入 LLM）。
+type CompletedTask struct {
+	TaskID    string
+	AgentName string
+	FinalText string
+	IsError   bool
+}
+
 // TaskState 后台子代理任务状态。
 type TaskState int
 

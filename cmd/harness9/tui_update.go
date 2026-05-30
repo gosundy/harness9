@@ -92,8 +92,8 @@ type shellResultMsg struct {
 	dur    time.Duration
 }
 
-// subAgentNotifyMsg 由 Mailbox 完成通知回调经 tea.Program.Send 投递，
-// 触发一条即时的后台子代理完成提示（不消费结果——结果仍在下次 dispatch 时 Drain 注入 LLM）。
+// subAgentNotifyMsg 由 TaskTracker 完成通知回调经 tea.Program.Send 投递，
+// 触发一条即时的后台子代理完成提示（结果由 DrainCompleted 幂等取走并在下次 dispatch 注入 LLM）。
 type subAgentNotifyMsg struct{}
 
 // readNextEvent 返回一个 tea.Cmd，该 Cmd 阻塞直到 ch 中有一个 Event，
@@ -939,15 +939,15 @@ func summarizeTool(name string, args json.RawMessage) string {
 // autoExecuting 续跑时，dispatch 由 EventDone handler 在 Elm Update 循环内调用，
 // 不存在并发问题（Bubbletea 保证 Update 是单线程的）。
 // 但 running 检查保留作为额外安全网，防止其他代码路径意外调用。
-// harvestSubAgentResults 排空后台子代理信箱：将每个已完成结果即时显示到对话区（scrollback，
+// harvestSubAgentResults 排空后台子代理跟踪器：将每个已完成结果即时显示到对话区（scrollback，
 // 用户立即可见），并写入 pendingSubAgentInject 以便下次 dispatch 注入 LLM 上下文。
-// 从 subAgentNotifyMsg（即时显示）与 dispatch（兜底）两处调用——mailbox 仅被 Drain 一次，
-// 后续调用只是空转，从而实现"显示一次 + 注入一次"，二者不争抢 mailbox。
+// 从 subAgentNotifyMsg（即时显示）与 dispatch（兜底）两处调用——DrainCompleted 幂等，已注入结果
+// 后续调用不再返回，从而实现"显示一次 + 注入一次"，二者不重复消费。
 func (m tuiModel) harvestSubAgentResults() tuiModel {
-	if m.subAgentMailbox == nil {
+	if m.subAgentTracker == nil {
 		return m
 	}
-	for _, ct := range m.subAgentMailbox.Drain() {
+	for _, ct := range m.subAgentTracker.DrainCompleted() {
 		status := "完成"
 		if ct.IsError {
 			status = "失败"

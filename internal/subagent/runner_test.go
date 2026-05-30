@@ -253,20 +253,33 @@ func TestRunnerBackgroundFailClosed(t *testing.T) {
 	}
 }
 
-// 回归测试 Bug1：后台子代理绝不向父进度 sink 发送（否则父 channel 关闭后会 panic）。
-func TestRunnerBackgroundSuppressesProgress(t *testing.T) {
+// 语义变更：runner 不再对后台特判进度——前台/后台都使用 ctx 中的 progress sink。
+// 后台的"安全性"（不向父 channel 发送）由调用方（TaskTool）注入干净 sink 保证，在 task_tool_test 验证。
+// 此处验证：background=true 且 ctx 含 sink 时，sink 被调用（确保后台日志可被捕获）。
+func TestRunnerBackgroundUsesCtxSink(t *testing.T) {
 	mock := providertest.NewMockWithCallback(func(_ []schema.Message, _ []schema.ToolDefinition) schema.Message {
 		return schema.Message{Role: schema.RoleAssistant, Content: "bg-done"}
 	})
 	r := newTestRunner(t, nil, mock)
-	var calls int
-	ctx := hooks.WithSubAgentProgress(context.Background(), func(schema.SubAgentUpdate) { calls++ })
+	var kinds []schema.SubAgentUpdateKind
+	ctx := hooks.WithSubAgentProgress(context.Background(), func(u schema.SubAgentUpdate) {
+		kinds = append(kinds, u.Kind)
+	})
 	def := SubAgentDefinition{Name: "bg", Description: "d", SystemPrompt: "p"}
 	if _, err := r.Run(ctx, def, "go", true); err != nil { // background=true
 		t.Fatal(err)
 	}
-	if calls != 0 {
-		t.Fatalf("后台子代理不应向父进度 sink 发送，实际发送 %d 次", calls)
+	var sawStart, sawDone bool
+	for _, k := range kinds {
+		if k == schema.SubAgentStart {
+			sawStart = true
+		}
+		if k == schema.SubAgentDone {
+			sawDone = true
+		}
+	}
+	if !sawStart || !sawDone {
+		t.Fatalf("后台应经 ctx sink 上报进度: start=%v done=%v", sawStart, sawDone)
 	}
 }
 
