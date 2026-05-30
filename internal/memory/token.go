@@ -1,4 +1,4 @@
-// Package memory provides short-term memory management for harness9: session history persistence and context compaction.
+// Package memory — token 估算工具。
 package memory
 
 import (
@@ -8,13 +8,12 @@ import (
 	"github.com/harness9/internal/schema"
 )
 
-// charsPerToken is the character-to-token ratio used for estimation.
-// This matches HermesAgent, DeepAgents, and OpenCode's approach:
-// simple, dependency-free, and slightly conservative.
+// charsPerToken 是字符数到 token 数的估算比例（字符数÷4）。
+// 与 HermesAgent、DeepAgents 和 OpenCode 的策略一致：简单、无外部依赖、略偏保守。
 const charsPerToken = 4
 
-// EstimateTokens estimates the total token count for a message slice
-// using character count / 4. Includes content, tool call arguments, and tool call IDs.
+// EstimateTokens 估算消息列表的总 token 数（字符数÷4）。
+// 计算范围包含消息文本内容、工具调用参数（Arguments）和工具调用 ID（ToolCallID）。
 func EstimateTokens(msgs []schema.Message) int {
 	total := 0
 	for _, m := range msgs {
@@ -27,9 +26,8 @@ func EstimateTokens(msgs []schema.Message) int {
 	return total / charsPerToken
 }
 
-// EstimateToolTokens estimates token usage for a slice of tool definitions.
-// Tool schemas can consume 20-30K+ tokens with many tools — this must be
-// included in preflight token checks.
+// EstimateToolTokens 估算工具定义列表的 token 用量（字符数÷4）。
+// 工具 Schema 在工具数量较多时可能消耗 20-30K+ token，预飞检查（preflight）时必须纳入计算。
 func EstimateToolTokens(tools []schema.ToolDefinition) int {
 	total := 0
 	for _, t := range tools {
@@ -44,8 +42,8 @@ func EstimateToolTokens(tools []schema.ToolDefinition) int {
 	return total / charsPerToken
 }
 
-// FormatTokenCount formats a token count as a human-readable string.
-// Examples: 45200 → "45.2K", 1200000 → "1.2M", 500 → "500"
+// FormatTokenCount 将 token 数格式化为人类可读字符串。
+// 示例：45200 → "45.2K"，1200000 → "1.2M"，500 → "500"。
 func FormatTokenCount(n int) string {
 	switch {
 	case n >= 1_000_000:

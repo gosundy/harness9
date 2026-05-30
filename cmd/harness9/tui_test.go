@@ -12,11 +12,12 @@ import (
 
 	"github.com/harness9/internal/engine"
 	"github.com/harness9/internal/schema"
+	"github.com/harness9/internal/subagent"
 )
 
 // newTestModel 返回适合单元测试的 tuiModel（nil engine/skills，固定尺寸）。
 func newTestModel() tuiModel {
-	m := newTUIModel(nil, nil, nil, nil, nil, context.Background(), "/tmp/test", "test-model")
+	m := newTUIModel(nil, nil, nil, nil, nil, nil, nil, nil, context.Background(), "/tmp/test", "test-model")
 	m.width = 80
 	m.height = 24
 	return m
@@ -884,6 +885,32 @@ func TestDispatch_ClearsPendingShellOutputAfterInject(t *testing.T) {
 	}
 }
 
+// --- @agent 前台直跑测试 ---
+
+func TestDispatchMentionUnknownAgent(t *testing.T) {
+	m := newTestModel()
+	reg := subagent.NewRegistry()
+	_ = reg.Register(subagent.SubAgentDefinition{Name: "explorer", Description: "d", SystemPrompt: "p"})
+	m.subAgentReg = reg
+	m.subAgentRunner = subagent.NewRunner(subagent.RunnerConfig{})
+	m2, _ := m.dispatchMention("@ghost 干活")
+	if !strings.Contains(strings.Join(m2.lines, "\n"), "未知子代理") {
+		t.Fatalf("应提示未知子代理: %q", strings.Join(m2.lines, "\n"))
+	}
+}
+
+func TestDispatchMentionEmptyTask(t *testing.T) {
+	m := newTestModel()
+	reg := subagent.NewRegistry()
+	_ = reg.Register(subagent.SubAgentDefinition{Name: "explorer", Description: "d", SystemPrompt: "p"})
+	m.subAgentReg = reg
+	m.subAgentRunner = subagent.NewRunner(subagent.RunnerConfig{})
+	m2, _ := m.dispatchMention("@explorer")
+	if !strings.Contains(strings.Join(m2.lines, "\n"), "请在 @explorer 后输入任务") {
+		t.Fatal("空任务应提示")
+	}
+}
+
 func TestIsInteractiveCmd(t *testing.T) {
 	cases := []struct {
 		cmd  string
@@ -1055,5 +1082,87 @@ func TestFlushPendingThinking_UpdatesPendingReplyStart(t *testing.T) {
 	}
 	if m.pendingReply != "answer" {
 		t.Errorf("pendingReply = %q, want %q", m.pendingReply, "answer")
+	}
+}
+
+// TestHandleTaskPanelKeyNavigation 验证任务面板的列表/详情导航：
+// ↑↓ 光标夹紧、Enter 进详情、Esc 列表态关闭/详情态返回。
+func TestHandleTaskPanelKeyNavigation(t *testing.T) {
+	tr := subagent.NewTaskTracker()
+	id1 := tr.Start("a", "p1")
+	_ = tr.Start("b", "p2")
+
+	m := newTestModel()
+	m.subAgentTracker = tr
+	m.taskPanelMode = true
+
+	// 列表态：↓ 到 1，再 ↓ 夹紧在 1（共 2 项）。
+	mm, _ := m.handleTaskPanelKey(tea.KeyMsg{Type: tea.KeyDown})
+	m = mm.(tuiModel)
+	if m.taskPanelCursor != 1 {
+		t.Fatalf("KeyDown cursor=%d, want 1", m.taskPanelCursor)
+	}
+	mm, _ = m.handleTaskPanelKey(tea.KeyMsg{Type: tea.KeyDown})
+	m = mm.(tuiModel)
+	if m.taskPanelCursor != 1 {
+		t.Fatalf("KeyDown 应夹紧在 1, 得 %d", m.taskPanelCursor)
+	}
+	// ↑ 回到 0。
+	mm, _ = m.handleTaskPanelKey(tea.KeyMsg{Type: tea.KeyUp})
+	m = mm.(tuiModel)
+	if m.taskPanelCursor != 0 {
+		t.Fatalf("KeyUp cursor=%d, want 0", m.taskPanelCursor)
+	}
+	// Enter 进详情：cursor=0 → id1。
+	mm, _ = m.handleTaskPanelKey(tea.KeyMsg{Type: tea.KeyEnter})
+	m = mm.(tuiModel)
+	if m.taskDetailID != id1 {
+		t.Fatalf("Enter 应进入 id1 详情, 得 %q", m.taskDetailID)
+	}
+	// 详情态 Esc 返回列表。
+	mm, _ = m.handleTaskPanelKey(tea.KeyMsg{Type: tea.KeyEsc})
+	m = mm.(tuiModel)
+	if m.taskDetailID != "" {
+		t.Fatal("详情态 Esc 应返回列表（taskDetailID 清空）")
+	}
+	if !m.taskPanelMode {
+		t.Fatal("详情态 Esc 不应关闭面板")
+	}
+	// 列表态 Esc 关闭面板。
+	mm, _ = m.handleTaskPanelKey(tea.KeyMsg{Type: tea.KeyEsc})
+	m = mm.(tuiModel)
+	if m.taskPanelMode {
+		t.Fatal("列表态 Esc 应关闭面板")
+	}
+}
+
+// TestBuildMentionHint 验证 @ 前缀的子代理建议提示：前缀匹配、全列出、无匹配。
+func TestBuildMentionHint(t *testing.T) {
+	reg := subagent.NewRegistry()
+	_ = reg.Register(subagent.SubAgentDefinition{Name: "explorer", Description: "只读代码探索", SystemPrompt: "p"})
+	_ = reg.Register(subagent.SubAgentDefinition{Name: "code-reviewer", Description: "代码审查", SystemPrompt: "p"})
+
+	m := newTestModel()
+	m.subAgentReg = reg
+
+	// 前缀 @expl → 仅 explorer
+	m.input.SetValue("@expl")
+	hint := m.buildCompletionHint()
+	if !strings.Contains(hint, "explorer") {
+		t.Fatalf("@expl 应建议 explorer: %q", hint)
+	}
+	if strings.Contains(hint, "code-reviewer") {
+		t.Fatalf("@expl 不应包含 code-reviewer: %q", hint)
+	}
+	// 裸 @ → 列出全部
+	m.input.SetValue("@")
+	hint = m.buildCompletionHint()
+	if !strings.Contains(hint, "explorer") || !strings.Contains(hint, "code-reviewer") {
+		t.Fatalf("@ 应列出全部子代理: %q", hint)
+	}
+	// 无匹配 → 空
+	m.input.SetValue("@zzz")
+	if h := m.buildCompletionHint(); h != "" {
+		t.Fatalf("@zzz 无匹配应返回空, 得 %q", h)
 	}
 }

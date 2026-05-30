@@ -109,41 +109,36 @@ Role (string)
 
 #### Provider 层 — `schema.StreamChunk`（`internal/schema/stream.go`）
 
-Provider 通过 `GenerateStream` 方法返回 `<-chan StreamChunk`，每个 chunk 代表 LLM 的一次增量产出：
+Provider 通过 `GenerateStream` 方法返回 `<-chan StreamChunk`，每个 chunk 代表 LLM 的一次增量产出。工具调用参数的流式累积在 Provider 内部由 `toolCallAccumulator` 完成，不通过 `StreamChunk` 暴露中间状态——`StreamChunkDone` 中的完整 `Message.ToolCalls` 已是累积后的最终结果：
 
 ```
 StreamChunk
 ├── Type     StreamChunkType  chunk 类型标识
-├── Delta    string           文本增量（text_delta 时有效）
-├── ToolCall *ToolCallDelta   工具调用增量（tool_call_start/delta 时有效）
-├── Message  *Message         完整响应（done 时有效）
+├── Delta    string           文本增量（text_delta / thinking_delta 时有效）
+├── Message  *Message         完整响应（done 时有效，含 ToolCalls）
+├── Usage    *Usage           token 用量（done 时由 Provider 填充）
 └── Error    string           错误信息（error 时有效）
-
-ToolCallDelta
-├── Index     int             工具调用在数组中的索引
-├── ID        string          工具调用 ID（start 时有效）
-├── Name      string          工具名称（start 时有效）
-└── Arguments json.RawMessage 参数增量（delta 时有效）
 ```
 
 **chunk 类型生命周期：**
 
 ```
-text_delta ──────────────────────┐    (多次，逐 token)
-                                  │
-tool_call_start ─── tool_call_delta ──┤    (每个工具调用重复此模式)
-                                  │
-                                  ▼
-                               done      (流结束，携带完整 Message)
+text_delta ──────────────────────────────────────┐   (多次，逐 token)
+                                                  │
+thinking_delta ──────────────────────────────────┤   (多次，推理内容，可选)
+                                                  │
+                                                  ▼
+                                               done  (流结束，携带完整 Message + Usage)
 ```
 
 | StreamChunkType | 含义 | 携带数据 |
 |----------------|------|---------|
 | `text_delta` | 文本增量，逐 token | `Delta` |
-| `tool_call_start` | 新工具调用开始 | `ToolCall.ID`, `ToolCall.Name` |
-| `tool_call_delta` | 工具参数 JSON 增量 | `ToolCall.Arguments`（部分 JSON） |
-| `done` | 流结束 | `Message`（完整响应，含 ToolCalls） |
+| `thinking_delta` | 推理增量（extended thinking / reasoning_content） | `Delta` |
+| `done` | 流结束 | `Message`（完整响应，含 ToolCalls）、`Usage` |
 | `error` | 出错 | `Error` |
+
+**工具调用累积说明：** Provider 内部通过 `toolCallAccumulators`（`internal/provider/tool_call_accumulator.go`）将 SDK 流式返回的 JSON 片段拼接为完整的工具参数，最终统一放入 `StreamChunkDone.Message.ToolCalls`，上层无需感知中间状态。
 
 #### Engine 层 — `engine.Event`（`internal/engine/stream.go`）
 
@@ -159,8 +154,12 @@ Event
 | EventType | 含义 | Data 类型 |
 |-----------|------|----------|
 | `action_delta` | LLM 输出的文本增量（逐 token） | `string` |
+| `thinking_delta` | 推理内容增量（extended thinking / reasoning） | `string` |
 | `tool_start` | 工具开始执行 | `schema.ToolCall` |
-| `tool_result` | 工具执行完成 | `schema.ToolResult` |
+| `tool_result` | 工具执行完成 | `ToolResultData`（含 `Result schema.ToolResult` 和 `Duration time.Duration`） |
+| `token_update` | 每轮 LLM 调用前发出，报告 token 估算 | `TokenUpdateData` |
+| `compaction` | 上下文发生有效压缩（token 减少 > 5%） | `CompactionData` |
+| `approval_required` | 工具执行需要人类审批 | `ApprovalRequest` |
 | `done` | 循环正常结束 | `nil` |
 | `error` | 出错 | `string` |
 
@@ -168,10 +167,15 @@ Event
 
 ```
 Turn 1:
-  action_delta × N    ← LLM 逐 token 输出（含工具调用决策文本）
+  token_update        ← LLM 调用前估算值
+  thinking_delta × N  ← 推理内容（若模型支持 extended thinking）
+  action_delta × N    ← LLM 逐 token 输出
+  token_update        ← 实际 token 用量（LLM 返回后更新）
+  approval_required   ← 危险工具等待人类审批（可选）
   tool_start          ← 工具开始执行
   tool_result         ← 工具执行完成
 Turn 2:
+  token_update        ← 下轮估算值
   action_delta × N    ← 最终回复（无工具调用）
   done                ← 循环结束
 ```

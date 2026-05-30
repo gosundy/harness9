@@ -1,3 +1,5 @@
+// Package provider — Anthropic Messages API 适配器。
+// 本文件实现基于 Anthropic Messages API 的 LLMProvider，支持 extended thinking（WithThinkingBudget）。
 package provider
 
 import (

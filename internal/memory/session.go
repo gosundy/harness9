@@ -1,3 +1,5 @@
+// Package memory — Session 接口与元数据类型。
+// 本文件定义了 harness9 会话管理的核心接口契约和 SessionInfo 元数据类型。
 package memory
 
 import (

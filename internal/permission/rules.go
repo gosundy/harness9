@@ -28,9 +28,12 @@ import (
 )
 
 const (
+	// RuleAllow 表示匹配到此规则时允许工具执行，无需审批。
 	RuleAllow = "allow"
-	RuleDeny  = "deny"
-	RuleAsk   = "ask"
+	// RuleDeny 表示匹配到此规则时直接拒绝工具执行，不调用 ApprovalFunc。
+	RuleDeny = "deny"
+	// RuleAsk 表示匹配到此规则时要求人类审批（调用 ApprovalFunc）。
+	RuleAsk = "ask"
 )
 
 type rule struct {

@@ -1,3 +1,4 @@
+// Package planning — PlanWriter 接口定义。
 package planning
 
 // PlanWriter 将 todo 列表持久化为人类可读的计划文档。

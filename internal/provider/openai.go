@@ -1,3 +1,5 @@
+// Package provider — OpenAI 兼容 API 适配器。
+// 本文件实现基于 OpenAI Chat Completion API 的 LLMProvider，支持 OpenAI 官方、Azure、OpenRouter 等兼容端点。
 package provider
 
 import (

@@ -55,6 +55,10 @@ const (
 	// TUI 实现必须在展示审批对话框期间继续消费 Event channel（不可直接 select 等待 ResponseCh），
 	// 否则多工具场景下会发生死锁。
 	EventApprovalRequired EventType = "approval_required"
+
+	// EventSubAgent 表示一次子代理进度更新。Data 类型为 schema.SubAgentUpdate。
+	// 由 task 工具执行期间，Runner 消费子引擎事件流时经 ctx 注入的进度回调透传。
+	EventSubAgent EventType = "sub_agent"
 )
 
 // Event 是引擎面向客户端的流式事件单元。RunStream 返回 <-chan Event，
@@ -79,7 +83,8 @@ type Event struct {
 	//   EventActionDelta  → string, EventThinkingDelta → string,
 	//   EventToolStart    → schema.ToolCall,
 	//   EventToolResult   → ToolResultData, EventDone → nil, EventError → string,
-	//   EventTokenUpdate  → TokenUpdateData, EventCompaction → CompactionData
+	//   EventTokenUpdate  → TokenUpdateData, EventCompaction → CompactionData,
+	//   EventSubAgent     → schema.SubAgentUpdate
 	Data any `json:"data,omitempty"`
 }
 
@@ -191,7 +196,11 @@ func (e *AgentEngine) RunStream(ctx context.Context, userPrompt string) (<-chan 
 			},
 		}
 
-		if err := e.runLoop(ctx, userPrompt, "engine-stream", em); err != nil {
+		// 注入子代理进度 sink：task 工具执行期间，Runner 经此回调把子代理事件透传给 TUI。
+		progressCtx := hooks.WithSubAgentProgress(ctx, func(u schema.SubAgentUpdate) {
+			sendEvent(ctx, ch, Event{Type: EventSubAgent, Data: u})
+		})
+		if err := e.runLoop(progressCtx, userPrompt, "engine-stream", em); err != nil {
 			ch <- Event{Type: EventError, Data: err.Error()}
 			return
 		}

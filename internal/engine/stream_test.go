@@ -4,10 +4,14 @@ package engine
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 
+	"github.com/harness9/internal/hooks"
+	"github.com/harness9/internal/provider/providertest"
 	"github.com/harness9/internal/schema"
+	"github.com/harness9/internal/tools"
 )
 
 // collectEvents drains a stream channel and returns all received events.
@@ -376,4 +380,51 @@ func TestRunStream_ThinkingDelta_PrecedesActionDelta(t *testing.T) {
 	if thinkIdx > actionIdx {
 		t.Errorf("EventThinkingDelta (idx=%d) should precede EventActionDelta (idx=%d)", thinkIdx, actionIdx)
 	}
+}
+
+func TestRunStreamInjectsSubAgentProgress(t *testing.T) {
+	reg := tools.NewRegistry()
+	if err := reg.Register(&progressProbeTool{}); err != nil {
+		t.Fatal(err)
+	}
+	eng := NewAgentEngine(providertest.NewMock(), reg, t.TempDir())
+
+	stream, err := eng.RunStream(context.Background(), "go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sawSubAgent bool
+	for evt := range stream {
+		if evt.Type == EventSubAgent {
+			u, ok := evt.Data.(schema.SubAgentUpdate)
+			if ok && u.AgentName == "probe" {
+				sawSubAgent = true
+			}
+		}
+	}
+	if !sawSubAgent {
+		t.Fatal("期望收到 EventSubAgent 事件，未收到")
+	}
+}
+
+// progressProbeTool 在 Execute 中触发一次子代理进度更新。
+type progressProbeTool struct{}
+
+func (p *progressProbeTool) Name() string { return "bash" }
+
+func (p *progressProbeTool) Definition() schema.ToolDefinition {
+	return schema.ToolDefinition{
+		Name:        "bash",
+		Description: "probe",
+		InputSchema: map[string]any{"type": "object", "properties": map[string]any{
+			"command": map[string]any{"type": "string"},
+		}},
+	}
+}
+
+func (p *progressProbeTool) Execute(ctx context.Context, _ json.RawMessage) (string, error) {
+	if fn := hooks.SubAgentProgressFromContext(ctx); fn != nil {
+		fn(schema.SubAgentUpdate{AgentName: "probe", Kind: schema.SubAgentStart})
+	}
+	return "ok", nil
 }

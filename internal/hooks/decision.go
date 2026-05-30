@@ -1,4 +1,5 @@
-// HookDecision、ApprovalFunc 和 Human-in-the-Loop 审批类型。
+// Package hooks — HookDecision、ApprovalFunc 和 Human-in-the-Loop 审批类型。
+// 本文件定义工具拦截器的决策机制（allow/deny/ask）以及人类审批（Human-in-the-Loop）的回调与上下文注入接口。
 package hooks
 
 import (
@@ -67,13 +68,13 @@ func ApprovalFnFromContext(ctx context.Context) ApprovalFunc {
 
 type approvedContextKey struct{}
 
-// withApproved marks in context that a human has already approved this tool call in a previous hook.
-// Subsequent HookActionAsk hooks will see this and skip re-asking.
+// withApproved 在 context 中标记当前工具调用已由前置 hook 经过人类审批。
+// 后续的 HookActionAsk hook 检查到此标记后直接跳过，避免对同一次工具调用重复弹出审批对话框。
 func withApproved(ctx context.Context) context.Context {
 	return context.WithValue(ctx, approvedContextKey{}, true)
 }
 
-// isApproved reports whether a human approval was already granted for this tool call.
+// isApproved 报告当前工具调用是否已在前置 hook 中获得人类审批。
 func isApproved(ctx context.Context) bool {
 	v, _ := ctx.Value(approvedContextKey{}).(bool)
 	return v
