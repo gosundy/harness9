@@ -29,3 +29,6 @@ tmp/
 website/node_modules/
 website/.vitepress/dist/
 website/.vitepress/cache/
+website/docs/
+website/.vitepress/sidebar.generated.js
+website/package-lock.json
