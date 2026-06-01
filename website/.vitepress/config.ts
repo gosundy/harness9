@@ -1,4 +1,5 @@
 import { defineConfig } from 'vitepress'
+import { docsSidebar } from './sidebar.generated.js'
 
 export default defineConfig({
   title: 'harness9',
@@ -17,29 +18,7 @@ export default defineConfig({
       },
     ],
     sidebar: {
-      '/docs/': [
-        {
-          text: '快速开始',
-          items: [
-            { text: '快速启动指南', link: '/docs/quick-start' },
-          ],
-        },
-        {
-          text: '核心功能',
-          items: [
-            { text: 'TUI 交互界面', link: '/docs/tui' },
-            { text: 'Shell 执行', link: '/docs/shell-execution' },
-            { text: 'Agent Loop', link: '/docs/agent-loop' },
-            { text: 'Tool Calling', link: '/docs/tool-calling' },
-            { text: 'Context Engineering', link: '/docs/context-engineering' },
-            { text: 'Planning 模块', link: '/docs/planning' },
-            { text: 'Human-in-the-Loop', link: '/docs/human-in-the-loop' },
-            { text: 'Agent Skills', link: '/docs/agent-skills' },
-            { text: '文件系统能力', link: '/docs/file-system' },
-            { text: 'CLI 使用指南', link: '/docs/cli' },
-          ],
-        },
-      ],
+      '/docs/': docsSidebar,
       '/blog/': [
         {
           text: '技术博客',
