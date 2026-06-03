@@ -270,6 +270,62 @@ func (s *Store) SoftDelete(ctx context.Context, id string) error {
 	return tx.Commit()
 }
 
+// queryEntries 是 List/StaleCandidates 共享的多行查询执行器。
+func (s *Store) queryEntries(ctx context.Context, where string, args ...any) ([]*Entry, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT `+entryColumns+` FROM long_term_memories WHERE `+where, args...)
+	if err != nil {
+		return nil, fmt.Errorf("查询记忆列表: %w", err)
+	}
+	defer rows.Close()
+	var result []*Entry
+	for rows.Next() {
+		e, err := scanEntry(rows)
+		if err != nil {
+			return nil, fmt.Errorf("扫描记忆: %w", err)
+		}
+		result = append(result, e)
+	}
+	return result, rows.Err()
+}
+
+// List 返回未删除、未过期的记忆，按 importance 降序、updated_at 降序排列，至多 limit 条。
+// 供 Precis 渲染精华视图使用。limit<=0 时不限制。
+func (s *Store) List(ctx context.Context, limit int) ([]*Entry, error) {
+	nowUnix := s.now().Unix()
+	where := `disabled = 0 AND (ttl_days IS NULL OR updated_at + ttl_days * 86400 >= ?)
+		ORDER BY importance DESC, updated_at DESC`
+	if limit > 0 {
+		where += fmt.Sprintf(" LIMIT %d", limit)
+	}
+	return s.queryEntries(ctx, where, nowUnix)
+}
+
+// PurgeExpired 将所有已过 TTL 的未删除记忆软删除，返回回收条数。
+func (s *Store) PurgeExpired(ctx context.Context) (int, error) {
+	nowUnix := s.now().Unix()
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE long_term_memories SET disabled = 1
+		 WHERE disabled = 0 AND ttl_days IS NOT NULL AND updated_at + ttl_days * 86400 < ?`, nowUnix)
+	if err != nil {
+		return 0, fmt.Errorf("回收过期记忆: %w", err)
+	}
+	// 同步清理 FTS（被回收条目移出索引）。
+	if _, err := s.db.ExecContext(ctx,
+		`DELETE FROM memories_fts WHERE id IN (SELECT id FROM long_term_memories WHERE disabled = 1)`); err != nil {
+		return 0, fmt.Errorf("清理 fts: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	return int(n), nil
+}
+
+// StaleCandidates 识别清理候选：importance<=1 且 use_count=0 且 60 天未更新的未删除条目。
+func (s *Store) StaleCandidates(ctx context.Context) ([]*Entry, error) {
+	cutoff := s.now().Add(-60 * 24 * time.Hour).Unix()
+	return s.queryEntries(ctx,
+		`disabled = 0 AND importance <= 1 AND use_count = 0 AND updated_at < ?`, cutoff)
+}
+
 // Get 按 ID 返回条目（含已软删除的，便于审计）。不存在时返回错误。
 func (s *Store) Get(ctx context.Context, id string) (*Entry, error) {
 	row := s.db.QueryRowContext(ctx,

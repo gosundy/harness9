@@ -168,3 +168,62 @@ func TestStoreReAddAfterSoftDelete(t *testing.T) {
 		t.Errorf("重新添加后应可检索到 1 条活跃记忆，got %d", len(res))
 	}
 }
+
+func TestStoreListOrderAndFilter(t *testing.T) {
+	s, now := newTestStore(t)
+	ctx := context.Background()
+	s.Add(ctx, &Entry{Title: "低", Content: "低优先", Importance: 2})
+	s.Add(ctx, &Entry{Title: "高", Content: "高优先", Importance: 9})
+	// 一条已过期条目（updated_at 在过去，ttl=1 天）。
+	s.now = func() time.Time { return now.Add(-48 * time.Hour) }
+	s.Add(ctx, &Entry{Title: "过期", Content: "过期内容", Importance: 10, TTLDays: 1})
+	s.now = func() time.Time { return *now }
+
+	list, err := s.List(ctx, 10)
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(list) != 2 {
+		t.Fatalf("过期条目应被过滤，期望 2 条，got %d", len(list))
+	}
+	if list[0].Title != "高" {
+		t.Errorf("应按 importance 降序，首条应为「高」，got %q", list[0].Title)
+	}
+}
+
+func TestStorePurgeExpired(t *testing.T) {
+	s, now := newTestStore(t)
+	ctx := context.Background()
+	s.now = func() time.Time { return now.Add(-48 * time.Hour) }
+	e, _ := s.Add(ctx, &Entry{Title: "x", Content: "过期", TTLDays: 1})
+	s.now = func() time.Time { return *now }
+
+	n, err := s.PurgeExpired(ctx)
+	if err != nil {
+		t.Fatalf("PurgeExpired: %v", err)
+	}
+	if n != 1 {
+		t.Errorf("应回收 1 条过期记忆，got %d", n)
+	}
+	got, _ := s.Get(ctx, e.ID)
+	if !got.Disabled {
+		t.Error("过期回收应置 disabled")
+	}
+}
+
+func TestStoreStaleCandidates(t *testing.T) {
+	s, now := newTestStore(t)
+	ctx := context.Background()
+	s.now = func() time.Time { return now.Add(-90 * 24 * time.Hour) }
+	s.Add(ctx, &Entry{Title: "陈旧", Content: "低价值且久未使用", Importance: 1})
+	s.now = func() time.Time { return *now }
+	s.Add(ctx, &Entry{Title: "新鲜", Content: "近期高价值", Importance: 8})
+
+	stale, err := s.StaleCandidates(ctx)
+	if err != nil {
+		t.Fatalf("StaleCandidates: %v", err)
+	}
+	if len(stale) != 1 || stale[0].Title != "陈旧" {
+		t.Errorf("应识别出 1 条陈旧候选，got %+v", stale)
+	}
+}
