@@ -94,7 +94,7 @@ func TestBuild_NilSkillsIndex(t *testing.T) {
 }
 
 func TestBuildInjectsLongTermMemory(t *testing.T) {
-	b := NewPromptBuilder(t.TempDir(), nil).WithLongTermMemory("## 偏好\n用户偏好中文")
+	b := NewPromptBuilder(t.TempDir(), nil).WithLongTermMemory(func() string { return "## 偏好\n用户偏好中文" })
 	out := b.Build()
 	if !strings.Contains(out, "用户偏好中文") {
 		t.Errorf("system prompt 应注入长期记忆内容: %s", out)
@@ -102,7 +102,7 @@ func TestBuildInjectsLongTermMemory(t *testing.T) {
 }
 
 func TestBuildSkipsEmptyLongTermMemory(t *testing.T) {
-	b := NewPromptBuilder(t.TempDir(), nil).WithLongTermMemory("")
+	b := NewPromptBuilder(t.TempDir(), nil).WithLongTermMemory(func() string { return "" })
 	out := b.Build()
 	if strings.Contains(out, "长期记忆") {
 		t.Error("空长期记忆不应注入标题段落")

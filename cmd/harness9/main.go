@@ -164,8 +164,10 @@ Flags:
 	if err := ltmPrecis.Regenerate(ctx); err != nil {
 		log.Print(logfmt.FormatMsg("main", fmt.Sprintf("重建记忆精华失败: %v", err)))
 	}
-	ltmContent, _ := ltmPrecis.Read()
-	promptBuilder = promptBuilder.WithLongTermMemory(ltmContent)
+	promptBuilder = promptBuilder.WithLongTermMemory(func() string {
+		content, _ := ltmPrecis.Read()
+		return content
+	})
 	// ---- Long-Term Memory 接线（续：工具注册见下）----
 
 	registry := tools.NewRegistry()

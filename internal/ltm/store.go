@@ -320,6 +320,7 @@ func (s *Store) PurgeExpired(ctx context.Context) (int, error) {
 }
 
 // StaleCandidates 识别清理候选：importance<=1 且 use_count=0 且 60 天未更新的未删除条目。
+// 当前为 Phase 3 接缝——供未来的 Consolidator（Dreaming 巩固）消费，主流程暂未调用。
 func (s *Store) StaleCandidates(ctx context.Context) ([]*Entry, error) {
 	cutoff := s.now().Add(-60 * 24 * time.Hour).Unix()
 	return s.queryEntries(ctx,
