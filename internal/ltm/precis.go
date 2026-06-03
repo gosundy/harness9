@@ -82,8 +82,8 @@ func truncateUTF8(s string, maxBytes int) string {
 	}
 	const marker = "\n…（已截断）"
 	budget := maxBytes - len(marker)
-	if budget < 0 {
-		budget = 0
+	if budget <= 0 {
+		return ""
 	}
 	cut := budget
 	for cut > 0 && !utf8RuneStart(s[cut]) {

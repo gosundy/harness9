@@ -2,6 +2,7 @@ package ltm
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -36,15 +37,24 @@ func TestPrecisByteCap(t *testing.T) {
 	s, _ := newTestStore(t)
 	ctx := context.Background()
 	for i := 0; i < 50; i++ {
-		s.Add(ctx, &Entry{Title: "条目", Content: strings.Repeat("内容", 50), Importance: 5})
+		if _, err := s.Add(ctx, &Entry{
+			Title:      fmt.Sprintf("条目%d", i),
+			Content:    fmt.Sprintf("第%d条记忆内容：%s", i, strings.Repeat("填充", 20)),
+			Importance: 5,
+		}); err != nil {
+			t.Fatal(err)
+		}
 	}
 	p := NewPrecis(s, filepath.Join(t.TempDir(), "MEMORY.md"), 500)
 	if err := p.Regenerate(ctx); err != nil {
 		t.Fatal(err)
 	}
 	content, _ := p.Read()
-	if len(content) > 600 { // 500 上限 + 截断标记裕量
-		t.Errorf("精华应被截断到约 500 字节，got %d", len(content))
+	if len(content) > 500 {
+		t.Errorf("精华应被截断到不超过 500 字节，got %d", len(content))
+	}
+	if !strings.Contains(content, "…（已截断）") {
+		t.Errorf("超长精华应包含截断标记，got %q", content)
 	}
 }
 
