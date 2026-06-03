@@ -92,3 +92,19 @@ func TestBuild_NilSkillsIndex(t *testing.T) {
 		t.Error("prompt should contain 'harness9' even with nil skills index")
 	}
 }
+
+func TestBuildInjectsLongTermMemory(t *testing.T) {
+	b := NewPromptBuilder(t.TempDir(), nil).WithLongTermMemory("## 偏好\n用户偏好中文")
+	out := b.Build()
+	if !strings.Contains(out, "用户偏好中文") {
+		t.Errorf("system prompt 应注入长期记忆内容: %s", out)
+	}
+}
+
+func TestBuildSkipsEmptyLongTermMemory(t *testing.T) {
+	b := NewPromptBuilder(t.TempDir(), nil).WithLongTermMemory("")
+	out := b.Build()
+	if strings.Contains(out, "长期记忆") {
+		t.Error("空长期记忆不应注入标题段落")
+	}
+}
