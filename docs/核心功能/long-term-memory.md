@@ -33,7 +33,7 @@ Long-Term Memory（LTM）系统覆盖以下能力：
 │   ltm.NewPrecis(ltmStore, path, 5120) → ltmPrecis               │
 │   ltm.NewExtractor(llm, ltmStore)     → extractor               │
 │   memory.WithMemoryExtractor(extractor)  → 注入 Compactor        │
-│   promptBuilder.WithLongTermMemory(content) → System Prompt     │
+│   promptBuilder.WithLongTermMemory(reader)  → System Prompt     │
 │   engine.WithMemoryNudge(10, text)    → 每 10 轮注入提示         │
 └─────────────────────┬───────────────────────────────────────────┘
                       │
@@ -266,9 +266,9 @@ interval=0 或 text="" 时关闭 nudge（默认关闭，需显式配置）。
 
 ## 7. Context 注入
 
-### 7.1 System Prompt 全量注入（精华快照）
+### 7.1 System Prompt 实时注入（每轮重读）
 
-`DefaultPromptBuilder.WithLongTermMemory(content string)` 将 MEMORY.md 内容注入 System Prompt 的第 6 段（"## 长期记忆"）：
+`DefaultPromptBuilder.WithLongTermMemory(reader func() string)` 接收一个读取闭包，在每次 `Build()` 组装 System Prompt 时调用它读取**最新**的 MEMORY.md 内容，注入第 6 段（"## 长期记忆"）：
 
 ```
 ## 长期记忆
@@ -279,13 +279,15 @@ interval=0 或 text="" 时关闭 nudge（默认关闭，需显式配置）。
 {MEMORY.md 内容}
 ```
 
-`content` 为空时整段跳过，不注入。精华快照在 `promptBuilder.Build()` 时固定（frozen snapshot at session init）。
+reader 返回空串时整段跳过，不注入。**注入内容每轮实时读取**（而非进程启动时快照固定）——因此 Agent 在会话中通过 `memory_write` 写入的记忆经 `Precis.Regenerate` 落盘后，会在下一轮对话的 System Prompt 精华中立即可见，无需重启进程。
 
-**main.go 接线**：
+**main.go 接线**（传入读取 Precis 的闭包，而非一次性字符串）：
 
 ```go
-ltmContent, _ := ltmPrecis.Read()
-promptBuilder = promptBuilder.WithLongTermMemory(ltmContent)
+promptBuilder = promptBuilder.WithLongTermMemory(func() string {
+    content, _ := ltmPrecis.Read()
+    return content
+})
 ```
 
 ### 7.2 按需检索（FTS5 JIT）
@@ -353,9 +355,11 @@ ltmPrecis := ltm.NewPrecis(ltmStore, memoryFilePath, 5120)
 ltmStore.PurgeExpired(ctx)
 ltmPrecis.Regenerate(ctx)
 
-// 4. 读取精华注入 System Prompt
-ltmContent, _ := ltmPrecis.Read()
-promptBuilder = promptBuilder.WithLongTermMemory(ltmContent)
+// 4. 注入精华读取闭包到 System Prompt（每轮 Build 时实时重读，写入即下一轮可见）
+promptBuilder = promptBuilder.WithLongTermMemory(func() string {
+    content, _ := ltmPrecis.Read()
+    return content
+})
 
 // 5. 注册 LTM 工具
 registry.Register(tools.NewMemoryWriteTool(ltmStore, ltmPrecis))
@@ -383,6 +387,7 @@ eng := engine.NewAgentEngine(llm, registry, workDir,
 | **独立 `ltm` 包，不并入 `memory`** | `memory` 在项目中明确定义为短期记忆；混入长期记忆会模糊模块边界，阻碍后续独立扩展 |
 | **复用 `state.db`，不新开连接** | WAL 模式要求单写者；新连接会破坏事务隔离，引入竞态 |
 | **物化视图（MEMORY.md）而非实时渲染** | 单一事实源（SQLite）+ 有界注入（≤5KB），规避 token bomb；每次写入重渲成本可忽略 |
+| **精华注入用读取闭包（每轮重读）** | `WithLongTermMemory` 接收 `func() string` 而非静态字符串，`Build()` 每轮重读 MEMORY.md；会话内新写入的记忆下一轮即在 System Prompt 可见，无需重启；读取 ≤5KB 文件成本可忽略 |
 | **standalone FTS5，手动同步** | 显式控制插入/删除/更新时机，无需触发器，对 SQLite 版本无额外要求 |
 | **`signature=NULL` 于软删除** | 释放 UNIQUE 槽位，使相同内容可在未来重新被添加，不造成永久封锁 |
 | **`MemoryExtractor` 接口定义在 `memory` 包** | 使用者侧定义原则；`memory` 包无需 import `ltm`，避免循环依赖 |

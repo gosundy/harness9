@@ -35,6 +35,9 @@ features:
   - icon: 🧠
     title: Context Engineering
     details: LLM 摘要压缩、SQLite 会话持久化、80% 阈值自动触发，长对话不丢语义。
+  - icon: 🗃️
+    title: Long-Term Memory
+    details: 跨会话长期记忆，SQLite + FTS5 持久化，MEMORY.md 物化视图实时注入，显式工具 / 压缩前提取 / nudge 三路触发，零新增依赖。
   - icon: 📋
     title: Planning 模块
     details: Plan Mode 先规划后执行，TodoStore 状态机校验，工具层权限过滤，自动续跑 + 停滞检测。

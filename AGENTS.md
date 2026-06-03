@@ -323,7 +323,7 @@ harness9/
 | **subagent** | Sub-Agent 子代理委派：SubAgentDefinition（ResolveTools 白名单∩全集-黑名单-task）、Registry（编程式 + `.harness9/agents/*.md` 文件式定义）、Runner（构建隔离子引擎 + RunStream + 桥接审批与进度）、TaskTool（task 工具，前台/后台双模式）、TaskTracker（后台任务单一事实源）；内置 general-purpose 通用子代理（继承父全部可用工具与模型）；防递归 + 权限不扩权 + 上下文隔离 | ✅ |
 | **memory** | Context Engineering：Session 接口、Manager（SQLite CRUD + WithToolResultsDir + DeleteSession 级联 GC + DB() 访问器）、SQLiteSession（WAL + 事务）、SummarizationCompactor（默认，LLM 摘要压缩 + 增量更新 + 错误回退）、TokenBudgetCompactor（回退，80% 阈值 + 孤立工具对双向修复）、SlidingWindowCompactor（回退方案）、token 估算工具；MemoryExtractor 接口 + WithMemoryExtractor（压缩前提取钩子） | ✅ |
 | **ltm** | Long-Term Memory：Store（`long_term_memories` 表 + standalone FTS5 `memories_fts`，复用 `state.db`，Add 签名去重 / Search FTS5 强化 / SoftDelete signature=NULL / List top-N / PurgeExpired / StaleCandidates）、Precis（MEMORY.md 物化视图，top-30 渲染 + 5KB 截断）、Extractor（LLM 压缩前事实提取，fail-open，实现 MemoryExtractor 接口）、Phase 3 接缝（Provider/Embedder/Consolidator + noopProvider） | ✅ |
-| **context** | DefaultPromptBuilder：System Prompt 结构化组装（基础 prompt + AGENTS.md + Skills 索引 + todo 指引 + offload 检索指引 + 长期记忆精华），WithOffloadEnabled 注入分页检索说明，WithLongTermMemory 注入 MEMORY.md 内容 | ✅ |
+| **context** | DefaultPromptBuilder：System Prompt 结构化组装（基础 prompt + AGENTS.md + Skills 索引 + todo 指引 + offload 检索指引 + 长期记忆精华），WithOffloadEnabled 注入分页检索说明，WithLongTermMemory 接收读取闭包、每轮 Build 时实时重读 MEMORY.md 精华注入（写入即下一轮可见） | ✅ |
 | **provider** | LLM 统一接口 + OpenAI / Anthropic SDK 适配器 + 实际 token 用量提取（Usage 类型）+ 模型 context window 注册表；AnthropicProvider 支持 WithThinkingBudget（extended thinking，≥1024 clamp）；OpenAIProvider 支持 WithIncludeReasoning + OpenRouter 自动检测，流式中通过 extractReasoningContent 提取 reasoning_content / reasoning 字段 | ✅ |
 | **schema** | 跨组件共享的核心数据类型（Message、ToolCall、Usage 等）；StreamChunk 定义 text_delta / thinking_delta / done / error 四种流式增量类型 | ✅ |
 | **tools** | 工具注册表 + 内置工具（bash / read_file（offset/limit 分页）/ write_file / edit_file / todo_write / memory_write（add/update/remove + Precis 重建）/ memory_search（FTS5 检索 + 命中强化））+ 路径沙箱 | ✅ |
@@ -331,7 +331,7 @@ harness9/
 | **logfmt** | 跨模块共享的块状日志渲染（FormatMsg/ToolStart/LoopStart 等 11 个格式函数） | ✅ |
 | **provider/providertest** | 测试基础设施（mock provider），不进入生产二进制 | ✅ |
 
-> **Roadmap（后续方向）**：FTS5 全文会话搜索（P3）、TTL 自动过期清理（P3）。
+> **Roadmap（后续方向）**：Long-Term Memory Phase 3——向量嵌入语义检索（`Embedder`，接入 Ollama / OpenAI Embeddings）、Dreaming 巩固（`Consolidator`，cron 批量晋升）、外部记忆提供者（`Provider`，接入 Mem0 / Honcho）、基于 `StaleCandidates` 的陈旧记忆自动清理（P3）。
 
 ---
 

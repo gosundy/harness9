@@ -98,6 +98,24 @@ ctx: 92.1K/128K (72%)  ← 黄色：警告，即将压缩
 
 详见 [Context Engineering 技术方案](docs/核心功能/context-engineering.md)。
 
+### Long-Term Memory（跨会话长期记忆）
+
+短期记忆只在单次会话内有效。**Long-Term Memory** 让 Agent 跨会话积累知识、记住用户偏好、复用历史决策——记忆持久化到 SQLite（`long_term_memories` 表 + FTS5 全文索引，复用 `state.db`，零新增依赖）。
+
+```
+› 记住：我偏好简洁的中文回复，测试用标准库 testing
+  ✓ memory_write(add) — 0ms
+
+# 下一次会话，无需重新说明，Agent 已知晓你的偏好
+```
+
+- **MEMORY.md 物化视图**：由 top-N 高价值条目（按 importance）自动渲染为有界文件（≤5KB），实时注入 System Prompt——天然规避「token bomb」，写入即下一轮可见
+- **三路触发**：① 显式 `memory_write`（add/update/remove）/ `memory_search`（FTS5 按需检索）工具；② 上下文压缩前由 LLM 自动提取持久事实（fail-open）；③ 每 N 轮注入记忆提示 nudge（防御性副本，不持久化）
+- **遗忘与去重**：SHA256 内容签名去重、TTL 过期回收、软删除（释放唯一槽位）、检索命中强化（`use_count`/`last_used_at`）、陈旧记忆识别
+- **唯一事实源**：SQLite 为权威存储，MEMORY.md 为其物化视图，避免双源漂移
+
+详见 [Long-Term Memory 实现原理](docs/核心功能/long-term-memory.md)。
+
 ### Agent Skills（按需加载的领域知识）
 
 在 `skills/<name>/SKILL.md` 下放置领域知识，Agent 按需加载，System Prompt 始终精简：
@@ -279,12 +297,13 @@ for evt := range stream {
 | **Permission** | Human-in-the-Loop 权限控制：PermissionHook（JSON 规则）+ 审批对话框（5 选项）+ 白名单动态更新 + 敏感路径硬保护        | ✅   |
 | **Sub-Agent**  | 子代理委派：内置 general-purpose 通用子代理、文件式定义（`.harness9/agents/*.md`）、task 工具（前台/后台）、`@agent` 直跑、TaskTracker、上下文隔离 + 防递归 + 权限不扩权 | ✅   |
 | **Planning**   | Plan Mode（先规划后执行）、TodoStore、todo_write 工具、PlanWriter 接口、工具层权限过滤、自动续跑 + 停滞检测           | ✅   |
-| **Memory**     | SQLiteSession（WAL）、Manager（WithToolResultsDir + DeleteSession GC）、SummarizationCompactor（默认，LLM 摘要）、TokenBudgetCompactor（回退） | ✅   |
-| **Context**    | System Prompt 结构化组装（基础 + AGENTS.md + Skills 索引 + todo 指引 + offload 检索指引）                | ✅   |
+| **Memory**     | 短期记忆：SQLiteSession（WAL）、Manager（WithToolResultsDir + DeleteSession GC + DB() 访问器）、SummarizationCompactor（默认，LLM 摘要 + MemoryExtractor 压缩前提取钩子）、TokenBudgetCompactor（回退） | ✅   |
+| **LTM**        | 长期记忆：Store（`long_term_memories` 表 + FTS5 `memories_fts`，复用 state.db；Add 签名去重 / Search 强化 / SoftDelete / List / PurgeExpired / StaleCandidates）、Precis（MEMORY.md 物化视图）、Extractor（LLM 压缩前提取，fail-open）、Phase 3 接缝（Provider/Embedder/Consolidator） | ✅   |
+| **Context**    | System Prompt 结构化组装（基础 + AGENTS.md + Skills 索引 + todo 指引 + offload 检索指引 + 长期记忆精华实时注入）                | ✅   |
 | **Skills**     | Skills 解析、索引、按需加载（`use_skill` 工具）                                                       | ✅   |
 | **Provider**   | LLM 统一接口，OpenAI / Anthropic 适配器，实际 token 用量提取                                           | ✅   |
 | **Schema**     | 跨组件共享的核心数据类型（Message、ToolCall、Usage 等）                                                  | ✅   |
-| **Tools**      | 工具注册表 + 内置工具（bash / read_file（offset/limit 分页）/ write_file / edit_file）                 | ✅   |
+| **Tools**      | 工具注册表 + 内置工具（bash / read_file（offset/limit 分页）/ write_file / edit_file / todo_write / memory_write / memory_search）                 | ✅   |
 | **Env**        | 零依赖 `.env` 配置加载器                                                                        | ✅   |
 
 
@@ -307,7 +326,8 @@ harness9/
 │   ├── hooks/               # 工具拦截器（OffloadHook + FilePlanWriter + HookRegistry）
 │   ├── subagent/            # Sub-Agent：定义/注册表/Runner/task 工具/TaskTracker
 │   ├── planning/            # PlanMode 枚举 + TodoStore + PlanWriter 接口
-│   ├── memory/              # Session 持久化 + Compactor 压缩策略 + DeleteSession GC
+│   ├── memory/              # 短期记忆：Session 持久化 + Compactor 压缩策略 + DeleteSession GC + MemoryExtractor 钩子
+│   ├── ltm/                 # 长期记忆：Store（SQLite + FTS5）+ Precis（MEMORY.md）+ Extractor + Phase3 接缝
 │   ├── provider/            # OpenAI / Anthropic 适配器 + 模型限制注册表
 │   ├── schema/              # 共享数据类型（Message、StreamChunk、Usage）
 │   ├── tools/               # 工具注册表 + 内置工具（read_file 支持 offset/limit）+ 路径沙箱
@@ -335,6 +355,7 @@ harness9/
 | [Agent Loop 核心实现原理](docs/核心功能/agent-loop.md)                 | 标准 ReAct 设计原理、PromptBuilder、流式架构                        |
 | [Tool Calling 工具调用系统](docs/核心功能/tool-calling.md)             | 工具接口、并发模型、内置工具详解、扩展指南                                   |
 | [Context Engineering 技术方案](docs/核心功能/context-engineering.md) | SQLiteSession、SummarizationCompactor、Token 估算、并发安全设计    |
+| [Long-Term Memory 实现原理](docs/核心功能/long-term-memory.md) | 跨会话长期记忆、SQLite+FTS5 存储、MEMORY.md 物化视图、三路触发、冲突/遗忘/强化机制 |
 | [Sub-Agent 系统实现原理](docs/核心功能/sub-agent.md)                     | 内置 general-purpose 子代理、文件式定义、task 工具、前台/后台执行、@agent 直跑、TaskTracker、安全隔离 |
 | [Planning 模块实现原理](docs/核心功能/planning.md)                      | Plan Mode、TodoStore、工具层权限控制、自动续跑、停滞检测、跨会话持久化            |
 | [文件系统能力技术方案](docs/核心功能/file-system.md)                         | OffloadHook、FilePlanWriter、read_file 分页、Session GC、Hooks 扩展 |
