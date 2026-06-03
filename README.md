@@ -104,7 +104,7 @@ ctx: 92.1K/128K (72%)  ← 黄色：警告，即将压缩
 
 ```
 › 记住：我偏好简洁的中文回复，测试用标准库 testing
-  ✓ memory_write(add) — 0ms
+  ✓ memory_write({"action":"add", ...}) — 0s
 
 # 下一次会话，无需重新说明，Agent 已知晓你的偏好
 ```

@@ -331,7 +331,9 @@ harness9/
 | **logfmt** | 跨模块共享的块状日志渲染（FormatMsg/ToolStart/LoopStart 等 11 个格式函数） | ✅ |
 | **provider/providertest** | 测试基础设施（mock provider），不进入生产二进制 | ✅ |
 
-> **Roadmap（后续方向）**：Long-Term Memory Phase 3——向量嵌入语义检索（`Embedder`，接入 Ollama / OpenAI Embeddings）、Dreaming 巩固（`Consolidator`，cron 批量晋升）、外部记忆提供者（`Provider`，接入 Mem0 / Honcho）、基于 `StaleCandidates` 的陈旧记忆自动清理（P3）。
+> **Roadmap（后续方向）**：
+> - **短期记忆**：FTS5 全文会话搜索（P3，跨会话检索历史对话消息，区别于 LTM 对记忆条目的检索）。
+> - **Long-Term Memory Phase 3**：向量嵌入语义检索（`Embedder`，接入 Ollama / OpenAI Embeddings）、Dreaming 巩固（`Consolidator`，cron 批量晋升）、外部记忆提供者（`Provider`，接入 Mem0 / Honcho）、基于 `StaleCandidates` 的陈旧记忆自动清理。
 
 ---
 
