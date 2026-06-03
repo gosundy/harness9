@@ -5,9 +5,13 @@ import (
 	"crypto/rand"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 )
+
+// ErrNotFound 表示按 ID 查询的记忆不存在。
+var ErrNotFound = errors.New("记忆不存在")
 
 const ltmSchema = `
 CREATE TABLE IF NOT EXISTS long_term_memories (
@@ -44,8 +48,7 @@ func NewStore(db *sql.DB) (*Store, error) {
 }
 
 // 全部列，供 scanEntry 复用。
-const entryColumns = `id, title, content, category, importance, signature,
-	created_at, updated_at, last_used_at, use_count, ttl_days, disabled, tags`
+const entryColumns = `id, title, content, category, importance, signature, created_at, updated_at, last_used_at, use_count, ttl_days, disabled, tags`
 
 type scanner interface{ Scan(dest ...any) error }
 
@@ -150,7 +153,7 @@ func (s *Store) Get(ctx context.Context, id string) (*Entry, error) {
 		`SELECT `+entryColumns+` FROM long_term_memories WHERE id = ?`, id)
 	e, err := scanEntry(row)
 	if err == sql.ErrNoRows {
-		return nil, fmt.Errorf("记忆不存在: %s", id)
+		return nil, fmt.Errorf("%w: %s", ErrNotFound, id)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("查询记忆: %w", err)

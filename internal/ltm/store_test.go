@@ -51,7 +51,10 @@ func TestStoreAddAndGet(t *testing.T) {
 func TestStoreAddDedup(t *testing.T) {
 	s, _ := newTestStore(t)
 	ctx := context.Background()
-	a, _ := s.Add(ctx, &Entry{Title: "x", Content: "重复内容"})
+	a, err := s.Add(ctx, &Entry{Title: "x", Content: "重复内容"})
+	if err != nil {
+		t.Fatalf("第一次 Add: %v", err)
+	}
 	b, err := s.Add(ctx, &Entry{Title: "y", Content: "重复内容"})
 	if err != nil {
 		t.Fatalf("第二次 Add: %v", err)
