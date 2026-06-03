@@ -1,5 +1,3 @@
-// internal/ltm/entry.go
-
 // Package ltm 实现 harness9 的长期记忆（Long-Term Memory）能力：
 // 跨会话持久化的知识/偏好/任务/技能条目。SQLite long_term_memories 表为唯一事实源，
 // MEMORY.md 物化视图注入 System Prompt，FTS5 提供按需全文检索。
@@ -22,7 +20,7 @@ const (
 	CategorySkill      Category = "skill"      // 操作性技能/方法
 )
 
-// Entry 是一条长期记忆。TTLDays 为 0 表示永不过期；Disabled 为软删除标志。
+// Entry 是一条长期记忆。TTLDays ≤ 0 表示永不过期；Disabled 为软删除标志。
 type Entry struct {
 	ID         string    `json:"id"`
 	Title      string    `json:"title"`
@@ -32,7 +30,7 @@ type Entry struct {
 	Signature  string    `json:"-"`          // SHA256(normalize(content))，用于去重
 	CreatedAt  time.Time `json:"created_at"`
 	UpdatedAt  time.Time `json:"updated_at"`
-	LastUsedAt time.Time `json:"last_used_at,omitempty"`
+	LastUsedAt time.Time `json:"last_used_at"`
 	UseCount   int       `json:"use_count"`
 	TTLDays    int       `json:"ttl_days,omitempty"`
 	Disabled   bool      `json:"-"`
