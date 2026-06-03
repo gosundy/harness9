@@ -44,6 +44,15 @@ func WithContextWindow(tokens int) Option {
 	return func(e *AgentEngine) { e.contextWindow = tokens }
 }
 
+// WithMemoryNudge 配置长期记忆 nudge：每隔 interval 个 turn 在发送给 LLM 的历史中
+// 注入一行 text 提示（仅注入到临时副本，不持久化）。interval<=0 时关闭。
+func WithMemoryNudge(interval int, text string) Option {
+	return func(e *AgentEngine) {
+		e.nudgeInterval = interval
+		e.nudgeText = text
+	}
+}
+
 // PromptBuilder 构造 Agent 的 system prompt。
 // 接口定义在 engine 包（使用者侧），由 internal/context 包实现。
 // 引擎通过此接口与 Context Engineering 模块解耦。
@@ -114,6 +123,8 @@ type AgentEngine struct {
 	planMode           planning.PlanMode   // 当前执行模式，影响工具过滤
 	todoStore          *planning.TodoStore // 可选，nil 表示无 planning
 	permissionMode     PermissionMode      // 全局权限策略，影响审批行为
+	nudgeInterval      int                 // >0 时每隔该轮数注入一次记忆 nudge
+	nudgeText          string              // nudge 提示文本
 }
 
 // NewAgentEngine 创建新的 AgentEngine。默认值：maxTurns=50, toolTimeout=60s。
@@ -272,6 +283,17 @@ func (e *AgentEngine) runLoop(ctx context.Context, userPrompt string, logPrefix 
 
 		// Report current context token usage to TUI / CLI.
 		em.tokenUpdate(totalTokens, e.contextWindow)
+
+		// 记忆 nudge：每隔 nudgeInterval 轮，向发送给 LLM 的历史副本追加一行提示。
+		// 注入到防御性副本，绝不写入 contextHistory（因此不会被持久化、不会累积）。
+		if e.nudgeInterval > 0 && e.nudgeText != "" && turnCount%e.nudgeInterval == 0 {
+			withNudge := make([]schema.Message, len(compactedHistory), len(compactedHistory)+1)
+			copy(withNudge, compactedHistory)
+			compactedHistory = append(withNudge, schema.Message{
+				Role:    schema.RoleUser,
+				Content: e.nudgeText,
+			})
+		}
 
 		turnStart := time.Now()
 		log.Print(logfmt.FormatTurnStart(logPrefix, turnCount, len(compactedHistory), len(availableTools)))
