@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -145,6 +146,73 @@ func (s *Store) Add(ctx context.Context, e *Entry) (*Entry, error) {
 		return nil, fmt.Errorf("提交事务: %w", err)
 	}
 	return s.Get(ctx, id)
+}
+
+// ftsQuery 把用户查询转换为安全的 FTS5 MATCH 表达式：
+// 按空白分词，每个 token 作为双引号短语（内部双引号翻倍转义），以 OR 连接。
+// 无有效 token 时返回空串。
+func ftsQuery(q string) string {
+	fields := strings.Fields(q)
+	if len(fields) == 0 {
+		return ""
+	}
+	quoted := make([]string, 0, len(fields))
+	for _, f := range fields {
+		quoted = append(quoted, `"`+strings.ReplaceAll(f, `"`, `""`)+`"`)
+	}
+	return strings.Join(quoted, " OR ")
+}
+
+// Search 用 FTS5 检索未删除、未过期的记忆，按相关度返回至多 limit 条。
+// 命中条目执行强化：自增 use_count、更新 last_used_at。
+func (s *Store) Search(ctx context.Context, query string, limit int) ([]*Entry, error) {
+	match := ftsQuery(query)
+	if match == "" {
+		return nil, nil
+	}
+	if limit <= 0 {
+		limit = 5
+	}
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id FROM memories_fts WHERE memories_fts MATCH ? ORDER BY rank LIMIT ?`, match, limit)
+	if err != nil {
+		return nil, fmt.Errorf("fts 检索: %w", err)
+	}
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return nil, fmt.Errorf("扫描 fts 结果: %w", err)
+		}
+		ids = append(ids, id)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	now := s.now()
+	var result []*Entry
+	for _, id := range ids {
+		e, err := s.Get(ctx, id)
+		if err != nil {
+			continue // 容忍并发删除
+		}
+		if e.Disabled || e.Expired(now) {
+			continue
+		}
+		// 强化命中条目。
+		if _, err := s.db.ExecContext(ctx,
+			`UPDATE long_term_memories SET use_count = use_count + 1, last_used_at = ? WHERE id = ?`,
+			now.Unix(), id); err != nil {
+			return nil, fmt.Errorf("强化命中: %w", err)
+		}
+		e.UseCount++
+		e.LastUsedAt = now
+		result = append(result, e)
+	}
+	return result, nil
 }
 
 // Get 按 ID 返回条目（含已软删除的，便于审计）。不存在时返回错误。

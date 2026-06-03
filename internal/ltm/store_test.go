@@ -66,3 +66,40 @@ func TestStoreAddDedup(t *testing.T) {
 		t.Errorf("去重命中应自增 use_count，got %d", b.UseCount)
 	}
 }
+
+func TestStoreSearchAndReinforce(t *testing.T) {
+	s, _ := newTestStore(t)
+	ctx := context.Background()
+	if _, err := s.Add(ctx, &Entry{Title: "Go 版本", Content: "项目使用 Go 1.25.3 构建"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Add(ctx, &Entry{Title: "数据库", Content: "使用 SQLite 持久化会话"}); err != nil {
+		t.Fatal(err)
+	}
+	res, err := s.Search(ctx, "SQLite", 5)
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if len(res) != 1 || res[0].Title != "数据库" {
+		t.Fatalf("期望命中「数据库」，got %+v", res)
+	}
+	// 强化：命中后 use_count 自增、last_used_at 写入。
+	again, _ := s.Get(ctx, res[0].ID)
+	if again.UseCount != 1 {
+		t.Errorf("命中应自增 use_count，got %d", again.UseCount)
+	}
+	if again.LastUsedAt.IsZero() {
+		t.Error("命中应写入 last_used_at")
+	}
+}
+
+func TestStoreSearchEmptyQuery(t *testing.T) {
+	s, _ := newTestStore(t)
+	res, err := s.Search(context.Background(), "   ", 5)
+	if err != nil {
+		t.Fatalf("空查询不应报错: %v", err)
+	}
+	if len(res) != 0 {
+		t.Errorf("空查询应返回空结果，got %d", len(res))
+	}
+}
