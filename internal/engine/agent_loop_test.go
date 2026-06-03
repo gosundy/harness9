@@ -20,6 +20,7 @@ import (
 
 	"github.com/harness9/internal/planning"
 	"github.com/harness9/internal/provider"
+	"github.com/harness9/internal/provider/providertest"
 	"github.com/harness9/internal/schema"
 	"github.com/harness9/internal/tools"
 )
@@ -457,6 +458,67 @@ func (p *capturingProvider) Generate(ctx context.Context, msgs []schema.Message,
 func (p *capturingProvider) GenerateStream(ctx context.Context, msgs []schema.Message, tools []schema.ToolDefinition) (<-chan schema.StreamChunk, error) {
 	p.onGenerate(msgs)
 	return p.inner.GenerateStream(ctx, msgs, tools)
+}
+
+// TestMemoryNudgeInjectedEveryNTurns 验证 WithMemoryNudge 在指定 turn 间隔向 LLM 历史注入 nudge 提示。
+func TestMemoryNudgeInjectedEveryNTurns(t *testing.T) {
+	var captured [][]schema.Message
+	mock := providertest.NewMockWithCallback(func(msgs []schema.Message, _ []schema.ToolDefinition) schema.Message {
+		// 拷贝快照，返回无工具调用的终止响应。
+		snap := make([]schema.Message, len(msgs))
+		copy(snap, msgs)
+		captured = append(captured, snap)
+		return schema.Message{Role: schema.RoleAssistant, Content: "完成"}
+	})
+	reg := tools.NewRegistry()
+	eng := NewAgentEngine(mock, reg, t.TempDir(),
+		WithMemoryNudge(1, "【记忆提示】如有值得长期保留的信息，请调用 memory_write。"),
+	)
+	if err := eng.Run(context.Background(), "hi"); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(captured) == 0 {
+		t.Fatal("provider 未被调用")
+	}
+	found := false
+	for _, m := range captured[0] {
+		if strings.Contains(m.Content, "【记忆提示】") {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("turn 1 的历史应注入 nudge 提示")
+	}
+}
+
+// TestMemoryNudgeNotPersisted 验证 nudge 仅注入每轮发送给 LLM 的临时副本，
+// 绝不写入持久化的 Session（contextHistory 不被污染）。
+func TestMemoryNudgeNotPersisted(t *testing.T) {
+	const nudge = "【记忆提示】请勿持久化此行"
+	mock := providertest.NewMockWithCallback(func(_ []schema.Message, _ []schema.ToolDefinition) schema.Message {
+		return schema.Message{Role: schema.RoleAssistant, Content: "done"}
+	})
+	sess := newMemorySessionForTest("nudge-sess")
+	eng := NewAgentEngine(mock, tools.NewRegistry(), t.TempDir(),
+		WithMemoryNudge(1, nudge),
+		WithSession(sess),
+	)
+	if err := eng.Run(context.Background(), "hi"); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	// 读回持久化的会话消息，确认 nudge 文本从未落盘。
+	msgs, err := sess.GetMessages(context.Background(), 0)
+	if err != nil {
+		t.Fatalf("GetMessages: %v", err)
+	}
+	if len(msgs) == 0 {
+		t.Fatal("会话应至少持久化用户输入与助手回复")
+	}
+	for _, m := range msgs {
+		if strings.Contains(m.Content, nudge) {
+			t.Errorf("nudge 提示不应被持久化到会话，却出现在: %q", m.Content)
+		}
+	}
 }
 
 // TestRunLoop_PlanMode_FiltersWriteTools 验证 Plan Mode 下写操作工具被过滤，只读工具保留。

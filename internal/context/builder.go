@@ -22,6 +22,7 @@ type DefaultPromptBuilder struct {
 	skillsIndex    *skills.Index
 	todoEnabled    bool
 	offloadEnabled bool
+	ltmReader      func() string
 }
 
 // NewPromptBuilder 创建绑定到指定工作目录和 Skills Index 的 PromptBuilder。
@@ -41,6 +42,14 @@ func (b *DefaultPromptBuilder) WithTodoEnabled(enabled bool) *DefaultPromptBuild
 // 仅在 OffloadHook 已配置时调用。
 func (b *DefaultPromptBuilder) WithOffloadEnabled(enabled bool) *DefaultPromptBuilder {
 	b.offloadEnabled = enabled
+	return b
+}
+
+// WithLongTermMemory 注入长期记忆精华读取器（返回 MEMORY.md 物化视图内容）。
+// reader 在每次 Build() 时被调用，确保注入的精华始终反映最新写入；返回空串时跳过整段。
+// 仅在 LTM 启用时调用。
+func (b *DefaultPromptBuilder) WithLongTermMemory(reader func() string) *DefaultPromptBuilder {
+	b.ltmReader = reader
 	return b
 }
 
@@ -103,6 +112,18 @@ func (b *DefaultPromptBuilder) Build() string {
 				"- limit：读取字节数（默认 4096）\n"+
 				"示例：read_file({\"path\": \".harness9/tool_results/{sessionID}/{toolCallID}.txt\", \"offset\": 4096, \"limit\": 4096})",
 		)
+	}
+
+	// 6. 长期记忆精华（每次构建时读取，确保最新；reader 为 nil 或返回空时跳过）
+	if b.ltmReader != nil {
+		if content := b.ltmReader(); content != "" {
+			parts = append(parts,
+				"## 长期记忆\n\n"+
+					"以下是跨会话积累的长期记忆精华。需要更多历史细节时，使用 `memory_search` 工具检索；"+
+					"发现值得长期保留的新信息时，使用 `memory_write` 工具记录。\n\n"+
+					content,
+			)
+		}
 	}
 
 	return strings.Join(parts, "\n\n")

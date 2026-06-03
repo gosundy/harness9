@@ -26,6 +26,7 @@ const CORE_ORDER = [
   'agent-loop',
   'tool-calling',
   'context-engineering',
+  'long-term-memory',
   'planning',
   'human-in-the-loop',
   'agent-skills',
