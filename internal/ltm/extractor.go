@@ -3,6 +3,7 @@ package ltm
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log"
 	"strings"
 	"time"
@@ -62,13 +63,13 @@ func (e *Extractor) Extract(msgs []schema.Message) {
 		{Role: schema.RoleUser, Content: "对话：\n" + convo},
 	}, nil)
 	if err != nil || resp == nil {
-		log.Print(logfmt.FormatMsg("ltm", "压缩前提取失败（fail-open）"))
+		log.Print(logfmt.FormatMsg("ltm", fmt.Sprintf("压缩前提取失败（fail-open）: %v", err)))
 		return
 	}
 
 	facts, err := parseFacts(resp.Content)
 	if err != nil {
-		log.Print(logfmt.FormatMsg("ltm", "提取结果解析失败（fail-open）"))
+		log.Print(logfmt.FormatMsg("ltm", fmt.Sprintf("提取结果解析失败（fail-open）: %v", err)))
 		return
 	}
 	for _, f := range facts {
@@ -81,7 +82,7 @@ func (e *Extractor) Extract(msgs []schema.Message) {
 			Category:   Category(f.Category),
 			Importance: f.Importance,
 		}); err != nil {
-			log.Print(logfmt.FormatMsg("ltm", "提取条目写入失败（fail-open）"))
+			log.Print(logfmt.FormatMsg("ltm", fmt.Sprintf("提取条目写入失败（fail-open）: %v", err)))
 		}
 	}
 }
