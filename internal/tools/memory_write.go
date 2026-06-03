@@ -2,7 +2,7 @@
 //
 // 三种动作：
 //   - add：新增一条记忆（内容签名去重）
-//   - update：按 id 更新既有记忆
+//   - update：按 id 部分更新既有记忆（仅覆盖调用方显式提供的字段）
 //   - remove：按 id 软删除记忆
 //
 // 每次成功写入后重建 MEMORY.md 物化视图（若注入了 Precis）。
@@ -38,7 +38,7 @@ func (t *MemoryWriteTool) Definition() schema.ToolDefinition {
 	return schema.ToolDefinition{
 		Name: "memory_write",
 		Description: "写入跨会话长期记忆。action=add 新增（相同内容自动去重）；" +
-			"action=update 按 id 更新；action=remove 按 id 删除。" +
+			"action=update 按 id 部分更新（仅覆盖提供的字段）；action=remove 按 id 删除。" +
 			"用于记住用户偏好、稳定的项目知识、关键决策或可复用技能。",
 		InputSchema: map[string]interface{}{
 			"type": "object",
@@ -97,14 +97,35 @@ func (t *MemoryWriteTool) Execute(ctx context.Context, args json.RawMessage) (st
 		if in.ID == "" {
 			return "", fmt.Errorf("update 需要 id")
 		}
-		if err := t.store.Update(ctx, &ltm.Entry{
-			ID: in.ID, Title: in.Title, Content: in.Content, Category: ltm.Category(in.Category),
-			Importance: in.Importance, TTLDays: in.TTLDays, Tags: in.Tags,
-		}); err != nil {
+		// 部分更新（merge）：先取出现有条目，仅覆盖调用方显式提供的字段，
+		// 未提供的字段保留原值，避免 LLM 仅想改某一字段却误清空 content。
+		// 注意：importance 与 ttl_days 为 0 时视为「未提供」（无法通过 update 显式设回 0）。
+		existing, err := t.store.Get(ctx, in.ID)
+		if err != nil {
+			return "", fmt.Errorf("查询待更新记忆失败: %w", err)
+		}
+		if in.Title != "" {
+			existing.Title = in.Title
+		}
+		if in.Content != "" {
+			existing.Content = in.Content
+		}
+		if in.Category != "" {
+			existing.Category = ltm.Category(in.Category)
+		}
+		if in.Importance != 0 {
+			existing.Importance = in.Importance
+		}
+		if in.TTLDays != 0 {
+			existing.TTLDays = in.TTLDays
+		}
+		if in.Tags != nil {
+			existing.Tags = in.Tags
+		}
+		if err := t.store.Update(ctx, existing); err != nil {
 			return "", fmt.Errorf("更新记忆失败: %w", err)
 		}
-		e, _ := t.store.Get(ctx, in.ID)
-		result = mustJSON(e)
+		result = mustJSON(existing)
 	case "remove":
 		if in.ID == "" {
 			return "", fmt.Errorf("remove 需要 id")
@@ -112,7 +133,7 @@ func (t *MemoryWriteTool) Execute(ctx context.Context, args json.RawMessage) (st
 		if err := t.store.SoftDelete(ctx, in.ID); err != nil {
 			return "", fmt.Errorf("删除记忆失败: %w", err)
 		}
-		result = fmt.Sprintf(`{"status":"removed","id":%q}`, in.ID)
+		result = mustJSON(map[string]string{"status": "removed", "id": in.ID})
 	default:
 		return "", fmt.Errorf("未知 action: %q（应为 add/update/remove）", in.Action)
 	}

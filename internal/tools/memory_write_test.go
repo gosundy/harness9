@@ -66,3 +66,32 @@ func TestMemoryWriteBadAction(t *testing.T) {
 		t.Error("未知 action 应返回错误")
 	}
 }
+
+func TestMemoryWriteUpdatePreservesOmittedContent(t *testing.T) {
+	tool, store := newWriteTool(t)
+	ctx := context.Background()
+	addOut, _ := tool.Execute(ctx, json.RawMessage(
+		`{"action":"add","title":"原标题","content":"原始内容","importance":3}`))
+	var added ltm.Entry
+	if err := json.Unmarshal([]byte(addOut), &added); err != nil {
+		t.Fatalf("解析 add 输出: %v", err)
+	}
+	// 仅更新 title 与 importance，省略 content —— content 应保留原值。
+	if _, err := tool.Execute(ctx, json.RawMessage(
+		`{"action":"update","id":"`+added.ID+`","title":"新标题","importance":9}`)); err != nil {
+		t.Fatalf("update: %v", err)
+	}
+	got, err := store.Get(ctx, added.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.Title != "新标题" {
+		t.Errorf("title 应更新为「新标题」，got %q", got.Title)
+	}
+	if got.Content != "原始内容" {
+		t.Errorf("省略的 content 应保留原值「原始内容」，got %q", got.Content)
+	}
+	if got.Importance != 9 {
+		t.Errorf("importance 应更新为 9，got %d", got.Importance)
+	}
+}
