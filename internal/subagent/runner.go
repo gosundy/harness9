@@ -94,7 +94,7 @@ func (r *Runner) Run(ctx context.Context, def SubAgentDefinition, prompt string,
 		if err != nil {
 			return SubAgentResult{}, fmt.Errorf("sandbox: 为子代理创建环境失败: %w", err)
 		}
-		defer r.sandboxMgr.Destroy(ctx, sandboxEnv.ID())
+		defer r.sandboxMgr.Destroy(r.baseCtx, sandboxEnv.ID())
 		effectiveBaseTools = wrapToolsWithSandbox(r.baseTools, sandboxEnv, r.workDir)
 	}
 
