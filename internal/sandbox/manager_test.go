@@ -5,7 +5,6 @@ import (
 	"context"
 	"sync"
 	"testing"
-	"time"
 )
 
 // newTestManager 创建使用 mock runner 的 Manager，不真实启动 Docker。
@@ -119,7 +118,6 @@ func TestManager_WithUpdateNotify(t *testing.T) {
 
 	mgr.Create(context.Background(), t.TempDir())
 
-	time.Sleep(10 * time.Millisecond)
 	mu.Lock()
 	defer mu.Unlock()
 	if len(received) == 0 {

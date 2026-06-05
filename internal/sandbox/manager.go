@@ -5,8 +5,11 @@ import (
 	"context"
 	"crypto/rand"
 	"fmt"
+	"log"
 	"strings"
 	"sync"
+
+	"github.com/harness9/internal/logfmt"
 )
 
 // SandboxInfo 是 Sandbox 状态的只读快照，用于 TUI 展示（ListAll 返回）。
@@ -38,6 +41,7 @@ func NewManager(cfg SandboxConfig) *Manager {
 }
 
 // WithUpdateNotify 设置状态变更通知回调，供 TUI 通过 channel 接收更新。
+// 必须在首次 Create 调用之前设置；不支持并发更新回调函数。
 func (m *Manager) WithUpdateNotify(fn func([]SandboxInfo)) {
 	m.onUpdate = fn
 }
@@ -116,7 +120,9 @@ func (m *Manager) ReapOrphans(ctx context.Context) error {
 		return fmt.Errorf("sandbox: 列出孤儿容器失败: %w", err)
 	}
 	for _, id := range strings.Fields(out) {
-		_, _ = realCmdRunner(ctx, "rm", id)
+		if _, err := realCmdRunner(ctx, "rm", id); err != nil {
+			log.Print(logfmt.FormatMsg("sandbox", fmt.Sprintf("清理孤儿容器 %s 失败: %v", id, err)))
+		}
 	}
 	return nil
 }
@@ -127,6 +133,7 @@ func (m *Manager) ListAll() []SandboxInfo {
 	defer m.mu.RUnlock()
 
 	infos := make([]SandboxInfo, 0, len(m.containers))
+	// 锁序：Manager.mu（读）→ Container.mu（读），严禁逆序以防死锁。
 	for _, c := range m.containers {
 		c.mu.RLock()
 		infos = append(infos, SandboxInfo{
@@ -150,7 +157,9 @@ func (m *Manager) notify() {
 // generateID 生成 16 位 hex 格式的随机 Sandbox UUID（crypto/rand，无冲突）。
 func generateID() string {
 	b := make([]byte, 8)
-	_, _ = rand.Read(b)
+	if _, err := rand.Read(b); err != nil {
+		panic(fmt.Sprintf("sandbox: crypto/rand 读取失败: %v", err))
+	}
 	return fmt.Sprintf("%x", b)
 }
 
