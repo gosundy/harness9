@@ -34,6 +34,7 @@ import (
 	"github.com/harness9/internal/permission"
 	"github.com/harness9/internal/planning"
 	"github.com/harness9/internal/provider"
+	"github.com/harness9/internal/sandbox"
 	"github.com/harness9/internal/skills"
 	"github.com/harness9/internal/subagent"
 	"github.com/harness9/internal/tools"
@@ -130,6 +131,25 @@ Flags:
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
+	// ---- Sandbox 系统接线 ----
+	sandboxCfg := sandbox.DefaultConfig()
+	var sandboxMgr *sandbox.Manager
+	var sandboxEnv sandbox.Environment // nil = 工具走本地执行路径
+
+	if sandboxCfg.Enabled {
+		sandboxMgr = sandbox.NewManager(sandboxCfg)
+		if err := sandboxMgr.ReapOrphans(ctx); err != nil {
+			log.Print(logfmt.FormatMsg("main", fmt.Sprintf("清理孤儿 Sandbox 失败（忽略）: %v", err)))
+		}
+		var sandboxErr error
+		sandboxEnv, sandboxErr = sandboxMgr.Create(ctx, workDir)
+		if sandboxErr != nil {
+			log.Fatal(logfmt.FormatMsg("main", fmt.Sprintf("创建主 Agent Sandbox 失败: %v", sandboxErr)))
+		}
+		defer sandboxMgr.DestroyAll(ctx)
+	}
+	// ---- Sandbox 系统接线（续：工具注入见下）----
+
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
 		log.Fatal(logfmt.FormatMsg("main", fmt.Sprintf("获取 home 目录失败: %v", err)))
@@ -177,10 +197,10 @@ Flags:
 		log.Fatal(logfmt.FormatMsg("main", fmt.Sprintf("初始化 FilePlanWriter 失败: %v", err)))
 	}
 	for _, tool := range []tools.BaseTool{
-		tools.NewReadFileTool(workDir),
-		tools.NewWriteFileTool(workDir),
-		tools.NewBashTool(workDir),
-		tools.NewEditFileTool(workDir),
+		tools.NewReadFileTool(workDir, tools.ReadFileWithEnvironment(sandboxEnv)),
+		tools.NewWriteFileTool(workDir, tools.WriteFileWithEnvironment(sandboxEnv)),
+		tools.NewBashTool(workDir, tools.WithEnvironment(sandboxEnv)),
+		tools.NewEditFileTool(workDir, tools.EditFileWithEnvironment(sandboxEnv)),
 		skills.NewUseSkillTool(skillsIndex),
 		tools.NewTodoWriteTool(todoStore, tools.WithPlanWriter(planWriter)),
 		tools.NewMemoryWriteTool(ltmStore, ltmPrecis),
@@ -243,6 +263,7 @@ Flags:
 		DefaultMaxTurns:    agentMaxTurns,
 		ToolTimeout:        60 * time.Second,
 		MaxConcurrentTools: 0,
+		SandboxMgr:         sandboxMgr,
 		ProviderFor: func(model string) (provider.LLMProvider, int, error) {
 			if model == "" {
 				return llm, modelLimits.ContextTokens, nil
