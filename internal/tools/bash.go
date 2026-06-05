@@ -93,7 +93,14 @@ func (t *BashTool) runInSandbox(ctx context.Context, cmd string) (string, error)
 		return fmt.Sprintf("执行报错: %v", err), nil
 	}
 	if ctx.Err() == context.DeadlineExceeded {
+		// 先截断，再追加警告，避免警告被截断掉
+		if len(out) > maxOutputLen {
+			out = out[:maxOutputLen]
+		}
 		return out + fmt.Sprintf("\n[警告: 命令执行超时(%s)，已被系统强制终止。]", bashHardTimeout), nil
+	}
+	if out == "" {
+		return "命令执行成功，无终端输出。", nil
 	}
 	if len(out) > maxOutputLen {
 		return fmt.Sprintf("%s\n\n...[终端输出过长，已截断至前 %d 字节]...", out[:maxOutputLen], maxOutputLen), nil

@@ -3,6 +3,7 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"strings"
 	"testing"
@@ -188,5 +189,32 @@ func TestBashTool_WithEnvironment_LargeOutputTruncated(t *testing.T) {
 	}
 	if !strings.Contains(out, "截断") {
 		t.Errorf("大输出应被截断，output length = %d", len(out))
+	}
+}
+
+func TestBashTool_WithEnvironment_EmptyOutput(t *testing.T) {
+	env := &mockEnv{runOut: ""}
+	tool := NewBashTool("/tmp", WithEnvironment(env))
+
+	out, err := tool.Execute(context.Background(), json.RawMessage(`{"command":"true"}`))
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if !strings.Contains(out, "成功") {
+		t.Errorf("空输出应提示成功，got: %q", out)
+	}
+}
+
+func TestBashTool_WithEnvironment_EnvError(t *testing.T) {
+	// RunBash 返回非空 error（环境级错误，非命令失败）
+	env := &mockEnv{runOut: "", runErr: fmt.Errorf("container not found")}
+	tool := NewBashTool("/tmp", WithEnvironment(env))
+
+	out, err := tool.Execute(context.Background(), json.RawMessage(`{"command":"echo hi"}`))
+	if err != nil {
+		t.Fatalf("Execute 不应返回 Go error: %v", err)
+	}
+	if !strings.Contains(out, "执行报错") {
+		t.Errorf("env error 应转为错误字符串，got: %q", out)
 	}
 }
