@@ -127,7 +127,7 @@ func (c *Container) Start(ctx context.Context) error {
 		"--cpus", c.cfg.CPUs,
 		"--memory", c.cfg.Memory,
 		"--network", "none",
-		"--tmpfs", "/tmp:size=256m,nosuid,noexec",
+		"--tmpfs", "/tmp:size=256m,nosuid,noexec,nodev",
 		"--mount", fmt.Sprintf("type=bind,src=%s,dst=%s", c.workDir, c.workDir),
 		c.cfg.Image,
 		"sleep", "infinity",
@@ -142,16 +142,14 @@ func (c *Container) Start(ctx context.Context) error {
 
 	// 轮询等待容器 Running=true，超时则转 Failed
 	for {
-		if startCtx.Err() != nil {
-			c.setState(StateFailed, fmt.Errorf("等待容器就绪超时（%v）", c.cfg.StartTimeout))
-			return c.err
-		}
 		out, inspectErr := c.run(startCtx, "inspect", "--format={{.State.Running}}", dockerID)
 		if inspectErr == nil && out == "true" {
 			break
 		}
 		select {
 		case <-startCtx.Done():
+			c.setState(StateFailed, fmt.Errorf("等待容器就绪超时（%v）", c.cfg.StartTimeout))
+			return c.err
 		case <-time.After(200 * time.Millisecond):
 		}
 	}
@@ -163,7 +161,12 @@ func (c *Container) Start(ctx context.Context) error {
 // Stop 停止并移除容器：docker stop（带宽限期）→ docker rm → StateTerminated。
 //
 // docker stop 失败不视为致命错误，仍继续执行 docker rm 以确保资源回收。
+// 已处于 Terminated 或 Failed 状态的容器调用 Stop 直接返回 nil（重入守卫）。
 func (c *Container) Stop(ctx context.Context) error {
+	// 已终止或失败的容器无需重复停止
+	if s := c.State(); s == StateTerminated || s == StateFailed {
+		return nil
+	}
 	c.setState(StateStopping, nil)
 
 	stopCtx, cancel := context.WithTimeout(ctx, c.cfg.StopTimeout)
@@ -173,7 +176,7 @@ func (c *Container) Stop(ctx context.Context) error {
 	// docker stop 宽限期内发 SIGTERM，超时后 SIGKILL
 	_, _ = c.run(stopCtx, "stop", "-t", "5", dockerID)
 	// docker rm 无论 stop 是否成功都尝试
-	_, _ = c.run(ctx, "rm", dockerID)
+	_, _ = c.run(stopCtx, "rm", dockerID)
 
 	c.setState(StateTerminated, nil)
 	return nil

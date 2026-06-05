@@ -134,6 +134,28 @@ func TestContainerStateString(t *testing.T) {
 	}
 }
 
+func TestContainerStart_InspectTimeout(t *testing.T) {
+	// inspect 始终返回 "false"，StartTimeout 设置极短触发超时
+	mock := newMock(
+		"abc123", errNil(), // docker run 成功
+		"false", errNil(), // inspect 返回 false（未就绪）
+	)
+	cfg := testCfg()
+	cfg.StartTimeout = 100 * time.Millisecond // 极短超时
+	c := newContainer("timeout-uuid", t.TempDir(), cfg, mock.run)
+
+	err := c.Start(context.Background())
+	if err == nil {
+		t.Fatal("inspect 持续返回 false 时 Start() 应返回 error")
+	}
+	if c.State() != StateFailed {
+		t.Errorf("State = %v, 期望 Failed", c.State())
+	}
+	if c.Err() == nil {
+		t.Error("Err() 应记录超时原因")
+	}
+}
+
 func TestContainerDockerRunArgs(t *testing.T) {
 	mock := newMock(
 		"abc123", errNil(),
