@@ -13,15 +13,14 @@ import (
 type DockerEnvironment struct {
 	containerID string // Docker container ID（完整 ID）
 	id          string // Sandbox UUID
-	workDir     string
 	run         cmdRunner
 }
 
 func newDockerEnvironment(containerID, id, workDir string, run cmdRunner) *DockerEnvironment {
+	_ = workDir // 参数保留以保持调用方兼容性，但不存储（文件读写直接操作宿主机文件系统）
 	return &DockerEnvironment{
 		containerID: containerID,
 		id:          id,
-		workDir:     workDir,
 		run:         run,
 	}
 }

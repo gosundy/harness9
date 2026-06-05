@@ -4,6 +4,7 @@ package sandbox
 import (
 	"context"
 	"errors"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -49,5 +50,31 @@ func TestDockerEnvironment_Close(t *testing.T) {
 	env := newDockerEnvironment("c123", "uuid", t.TempDir(), nil)
 	if err := env.Close(context.Background()); err != nil {
 		t.Errorf("Close() 不应返回 error: %v", err)
+	}
+}
+
+func TestDockerEnvironment_ReadWriteFile(t *testing.T) {
+	env := newDockerEnvironment("c123", "uuid", t.TempDir(), nil)
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.txt")
+
+	if err := env.WriteFile(context.Background(), path, []byte("hello")); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	data, err := env.ReadFile(context.Background(), path)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if string(data) != "hello" {
+		t.Errorf("ReadFile = %q, 期望 hello", data)
+	}
+}
+
+func TestDockerEnvironment_WriteFile_AutoMkdir(t *testing.T) {
+	env := newDockerEnvironment("c123", "uuid", t.TempDir(), nil)
+	path := filepath.Join(t.TempDir(), "nested", "dir", "file.txt")
+
+	if err := env.WriteFile(context.Background(), path, []byte("data")); err != nil {
+		t.Fatalf("WriteFile 自动创建目录: %v", err)
 	}
 }
