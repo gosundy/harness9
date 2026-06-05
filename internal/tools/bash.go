@@ -116,6 +116,10 @@ func (t *BashTool) runLocal(ctx context.Context, cmd string) (string, error) {
 	outputStr := string(out)
 
 	if ctx.Err() == context.DeadlineExceeded {
+		// 先截断，再追加警告，避免警告被截断掉
+		if len(outputStr) > maxOutputLen {
+			outputStr = outputStr[:maxOutputLen]
+		}
 		return outputStr + fmt.Sprintf("\n[警告: 命令执行超时(%s)，已被系统强制终止。]", bashHardTimeout), nil
 	}
 	if err != nil {
