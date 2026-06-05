@@ -633,5 +633,10 @@ func (m tuiModel) renderSandboxBar() string {
 		parts = append(parts, fmt.Sprintf("%s (%s) %s", shortID, label, stateStyled))
 	}
 
-	return strings.Join(parts, " │ ")
+	bar := strings.Join(parts, " │ ")
+	// 超过终端宽度时降级为不显示，确保布局稳定
+	if m.width > 0 && lipgloss.Width(bar) > m.width-2 {
+		return ""
+	}
+	return bar
 }
