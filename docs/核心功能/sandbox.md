@@ -200,4 +200,4 @@ Sandbox 系统参考了主流框架的最佳实践：
 | OpenHarness | fail-closed 网络策略（`--network none`）、path_validator 路径校验 |
 | OpenSandbox | 七状态生命周期模型（简化为五状态）、execd 通信模式（简化为 docker exec） |
 
-详见 [Sandbox 系统设计规格](../../docs/设计规格/2026-06-05-sandbox-design.md) 和 [调研报告](../../docs/技术调研/sandbox-design-research.md)。
+详见 [Sandbox 系统设计规格](https://github.com/ZhangShenao/harness9/blob/master/docs/%E8%AE%BE%E8%AE%A1%E8%A7%84%E6%A0%BC/2026-06-05-sandbox-design.md) 和 [调研报告](https://github.com/ZhangShenao/harness9/blob/master/docs/%E6%8A%80%E6%9C%AF%E8%B0%83%E7%A0%94/sandbox-design-research.md)。
