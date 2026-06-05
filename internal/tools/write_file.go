@@ -25,7 +25,9 @@ type WriteFileTool struct {
 	// workDir 工具允许写入的根目录（Sandbox Boundary，沙箱边界），
 	// 所有写入操作被限制在此目录树内。
 	workDir string
-	env     sandbox.Environment // 预留：当前文件操作通过 bind mount 在宿主机侧执行
+	// TODO: 当需要将文件操作路由至容器内执行时，接入 env.ReadFile/WriteFile。
+	// 目前文件操作通过 bind mount 在宿主机侧执行，与容器内视图一致，无需路由。
+	env sandbox.Environment
 }
 
 // WriteFileOption 是 WriteFileTool 的功能选项函数。

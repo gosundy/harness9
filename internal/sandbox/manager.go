@@ -41,9 +41,11 @@ func NewManager(cfg SandboxConfig) *Manager {
 }
 
 // WithUpdateNotify 设置状态变更通知回调，供 TUI 通过 channel 接收更新。
-// 必须在首次 Create 调用之前设置；不支持并发更新回调函数。
+// 必须在首次 Create 调用之前设置。内部用 m.mu 保护，并发安全。
 func (m *Manager) WithUpdateNotify(fn func([]SandboxInfo)) {
+	m.mu.Lock()
 	m.onUpdate = fn
+	m.mu.Unlock()
 }
 
 // Create 为一个 Agent 创建独立 Sandbox，返回可用的 Environment。
@@ -149,8 +151,12 @@ func (m *Manager) ListAll() []SandboxInfo {
 }
 
 func (m *Manager) notify() {
-	if m.onUpdate != nil {
-		m.onUpdate(m.ListAll())
+	// 先持读锁取出 fn，再释放锁后调用，避免 fn 内部再次获取写锁时产生死锁。
+	m.mu.RLock()
+	fn := m.onUpdate
+	m.mu.RUnlock()
+	if fn != nil {
+		fn(m.ListAll())
 	}
 }
 

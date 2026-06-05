@@ -16,8 +16,8 @@ type DockerEnvironment struct {
 	run         cmdRunner
 }
 
-func newDockerEnvironment(containerID, id, workDir string, run cmdRunner) *DockerEnvironment {
-	_ = workDir // 参数保留以保持调用方兼容性，但不存储（文件读写直接操作宿主机文件系统）
+func newDockerEnvironment(containerID, id, _ string, run cmdRunner) *DockerEnvironment {
+	// workDir 参数不存储：文件读写通过 bind mount 在宿主机侧执行，无需 DockerEnvironment 持有路径。
 	return &DockerEnvironment{
 		containerID: containerID,
 		id:          id,

@@ -87,17 +87,14 @@ func (t *BashTool) Execute(ctx context.Context, args json.RawMessage) (string, e
 }
 
 // runInSandbox 通过注入的 Environment 在容器内执行命令。
+//
+// 超时处理说明：DockerEnvironment.RunBash 内部将 docker exec 的失败（含 ctx 取消/超时）
+// 转换为错误字符串返回（err==nil），因此不在此处检查 ctx.Err()，
+// 避免"命令刚好在超时边界成功完成"时误加超时警告。
 func (t *BashTool) runInSandbox(ctx context.Context, cmd string) (string, error) {
 	out, err := t.env.RunBash(ctx, cmd, t.workDir)
 	if err != nil {
 		return fmt.Sprintf("执行报错: %v", err), nil
-	}
-	if ctx.Err() == context.DeadlineExceeded {
-		// 先截断，再追加警告，避免警告被截断掉
-		if len(out) > maxOutputLen {
-			out = out[:maxOutputLen]
-		}
-		return out + fmt.Sprintf("\n[警告: 命令执行超时(%s)，已被系统强制终止。]", bashHardTimeout), nil
 	}
 	if out == "" {
 		return "命令执行成功，无终端输出。", nil

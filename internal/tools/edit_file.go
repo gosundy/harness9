@@ -27,7 +27,9 @@ import (
 type EditFileTool struct {
 	// workDir 沙箱边界（Sandbox Boundary），所有文件操作被限制在此目录内。
 	workDir string
-	env     sandbox.Environment // 预留：当前文件操作通过 bind mount 在宿主机侧执行
+	// TODO: 当需要将文件操作路由至容器内执行时，接入 env.ReadFile/WriteFile。
+	// 目前文件操作通过 bind mount 在宿主机侧执行，与容器内视图一致，无需路由。
+	env sandbox.Environment
 }
 
 // EditFileOption 是 EditFileTool 的功能选项函数。

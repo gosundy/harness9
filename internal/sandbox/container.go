@@ -128,7 +128,8 @@ func (c *Container) Start(ctx context.Context) error {
 		"--memory", c.cfg.Memory,
 		"--network", "none",
 		"--tmpfs", "/tmp:size=256m,nosuid,noexec,nodev",
-		"--mount", fmt.Sprintf("type=bind,src=%s,dst=%s", c.workDir, c.workDir),
+		// -v 语法不依赖逗号分隔，对含逗号的路径安全；等价于 --mount type=bind。
+		"-v", fmt.Sprintf("%s:%s", c.workDir, c.workDir),
 		c.cfg.Image,
 		"sleep", "infinity",
 	)

@@ -406,8 +406,11 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case sandboxUpdateMsg:
 		m.sandboxes = msg.infos
-		// 继续等待下次更新（持续监听 channel）
-		return m, waitSandboxUpdate(m.sandboxCh)
+		// 继续等待下次更新（持续监听 channel）；nil 守卫防止 nil channel 永久阻塞。
+		if m.sandboxCh != nil {
+			return m, waitSandboxUpdate(m.sandboxCh)
+		}
+		return m, nil
 
 	case subAgentDirectMsg:
 		if msg.update != nil {

@@ -260,6 +260,8 @@ func NewRunner(cfg RunnerConfig) *Runner {
 }
 
 // wrapToolsWithSandbox 为标准工具注入 sandbox.Environment，非标准工具原样返回。
+// 工具名字符串（"bash"/"read_file" 等）与各 Tool.Name() 方法返回值耦合；
+// 若工具名变更，此处需同步维护。
 func wrapToolsWithSandbox(ts []tools.BaseTool, env sandbox.Environment, workDir string) []tools.BaseTool {
 	result := make([]tools.BaseTool, len(ts))
 	for i, t := range ts {
