@@ -413,7 +413,7 @@ harness9/
 
 [![Star History Chart](https://api.star-history.com/svg?repos=ZhangShenao/harness9&type=Date)](https://star-history.com/#ZhangShenao/harness9&Date)
 
-![visitors](https://hits.seeyoufarm.com/api/count/incr/badge.svg?url=https%3A%2F%2Fgithub.com%2FZhangShenao%2Fharness9&count_bg=%230079C7&title_bg=%23555555&title=visitors&edge_flat=false)
+[![Visitors](https://api.visitorbadge.io/api/visitors?path=ZhangShenao%2Fharness9&label=visitors&countColor=%230079C7)](https://visitorbadge.io/status?path=ZhangShenao%2Fharness9)
 
 ---
 
