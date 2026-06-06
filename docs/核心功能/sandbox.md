@@ -114,7 +114,9 @@ Manager（单例）
 | 参数 | 值 | 作用 |
 |------|-----|------|
 | `--cap-drop all` | — | 丢弃所有 Linux Capabilities |
-| `--cap-add DAC_OVERRIDE` | — | 仅恢复包管理器所需的最小能力 |
+| `--cap-add DAC_OVERRIDE` | — | 文件权限绕过（包管理器写入所需） |
+| `--cap-add SETUID` | — | 允许 apt-get 降权到 `_apt` 用户 |
+| `--cap-add SETGID` | — | 允许 apt-get 切换组（与 SETUID 配合） |
 | `--security-opt no-new-privileges:true` | — | 禁止 setuid 特权提升 |
 | `--pids-limit` | 256 | 防 fork bomb |
 | `--tmpfs /tmp` | 256m,nosuid,noexec,nodev | 临时目录隔离 |

@@ -122,6 +122,8 @@ func (c *Container) Start(ctx context.Context) error {
 		"--label", "harness9=1",
 		"--cap-drop", "all",
 		"--cap-add", "DAC_OVERRIDE",
+		"--cap-add", "SETUID",
+		"--cap-add", "SETGID",
 		"--security-opt", "no-new-privileges:true",
 		"--pids-limit", fmt.Sprintf("%d", c.cfg.PidsLimit),
 		"--cpus", c.cfg.CPUs,
