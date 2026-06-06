@@ -113,6 +113,9 @@ func (r *Runner) Run(ctx context.Context, def SubAgentDefinition, prompt string,
 		loader = r.skillsIndex.GetFullContent
 	}
 	spb := newPromptBuilder(def.SystemPrompt, r.workDir, def.Skills, loader)
+	if r.sandboxMgr != nil {
+		spb.WithSandboxContext(true)
+	}
 
 	maxTurns := r.defaultMaxTurns
 	if def.MaxTurns > 0 {
