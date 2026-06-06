@@ -413,8 +413,6 @@ harness9/
 
 [![Star History Chart](https://api.star-history.com/svg?repos=ZhangShenao/harness9&type=Date)](https://star-history.com/#ZhangShenao/harness9&Date)
 
-[![Visitors](https://api.visitorbadge.io/api/visitors?path=ZhangShenao%2Fharness9&label=visitors&countColor=%230079C7)](https://visitorbadge.io/status?path=ZhangShenao%2Fharness9)
-
 ---
 
 ## License
