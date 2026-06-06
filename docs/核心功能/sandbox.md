@@ -1,6 +1,6 @@
 # Sandbox 沙箱系统
 
-harness9 的 Sandbox 系统在 Docker 容器内运行所有工具调用，提供操作系统级隔离——独立进程空间、禁用网络、Capability 丢弃、资源配额——同时对 Agent 完全透明：启用前后工具接口不变，行为完全一致。
+harness9 的 Sandbox 系统在 Docker 容器内运行所有工具调用，提供操作系统级隔离——独立进程空间、Capability 丢弃、资源配额——同时对 Agent 完全透明：启用前后工具接口不变，行为完全一致。
 
 ---
 
@@ -9,7 +9,6 @@ harness9 的 Sandbox 系统在 Docker 容器内运行所有工具调用，提供
 默认情况下，harness9 的工具（bash、read_file 等）直接在宿主进程中执行，没有容器级隔离。这对本地开发足够安全，但在以下场景需要更强的隔离：
 
 - Agent 执行不受信任的代码或脚本
-- 需要严格限制 Agent 的网络访问能力
 - 多用户共享同一台机器
 - 生产环境部署，需要资源配额保护
 
@@ -115,10 +114,11 @@ Manager（单例）
 | 参数 | 值 | 作用 |
 |------|-----|------|
 | `--cap-drop all` | — | 丢弃所有 Linux Capabilities |
-| `--cap-add DAC_OVERRIDE` | — | 仅恢复包管理器所需的最小能力 |
+| `--cap-add DAC_OVERRIDE` | — | 文件权限绕过（包管理器写入所需） |
+| `--cap-add SETUID` | — | 允许 apt-get 降权到 `_apt` 用户 |
+| `--cap-add SETGID` | — | 允许 apt-get 切换组（与 SETUID 配合） |
 | `--security-opt no-new-privileges:true` | — | 禁止 setuid 特权提升 |
 | `--pids-limit` | 256 | 防 fork bomb |
-| `--network none` | — | fail-closed，完全禁网 |
 | `--tmpfs /tmp` | 256m,nosuid,noexec,nodev | 临时目录隔离 |
 | bind mount | `workDir` | 宿主机与容器共享工作目录 |
 
@@ -197,7 +197,7 @@ Sandbox 系统参考了主流框架的最佳实践：
 | 框架 | 借鉴点 |
 |------|--------|
 | HermesAgent | Docker 安全加固参数（cap-drop/no-new-privileges/pids-limit/tmpfs）、孤儿容器回收 |
-| OpenHarness | fail-closed 网络策略（`--network none`）、path_validator 路径校验 |
+| OpenHarness | path_validator 路径校验 |
 | OpenSandbox | 七状态生命周期模型（简化为五状态）、execd 通信模式（简化为 docker exec） |
 
 详见 [Sandbox 系统设计规格](https://github.com/ZhangShenao/harness9/blob/master/docs/%E8%AE%BE%E8%AE%A1%E8%A7%84%E6%A0%BC/2026-06-05-sandbox-design.md) 和 [调研报告](https://github.com/ZhangShenao/harness9/blob/master/docs/%E6%8A%80%E6%9C%AF%E8%B0%83%E7%A0%94/sandbox-design-research.md)。

@@ -6,15 +6,15 @@ import (
 )
 
 func TestDefaultConfig_Defaults(t *testing.T) {
-	t.Setenv("SANDBOX_ENABLED", "")
 	t.Setenv("SANDBOX_IMAGE", "")
 	t.Setenv("SANDBOX_CPUS", "")
 	t.Setenv("SANDBOX_MEMORY", "")
+	t.Setenv("SANDBOX_ENABLED", "")
 
 	cfg := DefaultConfig()
 
-	if cfg.Enabled {
-		t.Error("Enabled 默认应为 false")
+	if !cfg.Enabled {
+		t.Error("Enabled 默认应为 true")
 	}
 	if cfg.Image != "ubuntu:22.04" {
 		t.Errorf("Image = %q, 期望 ubuntu:22.04", cfg.Image)
@@ -55,5 +55,29 @@ func TestDefaultConfig_FromEnv(t *testing.T) {
 	}
 	if cfg.Memory != "256m" {
 		t.Errorf("Memory = %q, 期望 256m", cfg.Memory)
+	}
+}
+
+func TestDefaultConfig_DisabledWhenFalse(t *testing.T) {
+	cases := []string{"false", "False", "FALSE"}
+	for _, v := range cases {
+		t.Run(v, func(t *testing.T) {
+			t.Setenv("SANDBOX_ENABLED", v)
+			if DefaultConfig().Enabled {
+				t.Errorf("SANDBOX_ENABLED=%q 时 Enabled 应为 false", v)
+			}
+		})
+	}
+}
+
+func TestDefaultConfig_EnabledForNonFalseValues(t *testing.T) {
+	cases := []string{"0", "no", "1", "yes", "true"}
+	for _, v := range cases {
+		t.Run(v, func(t *testing.T) {
+			t.Setenv("SANDBOX_ENABLED", v)
+			if !DefaultConfig().Enabled {
+				t.Errorf("SANDBOX_ENABLED=%q 时 Enabled 应为 true（仅 'false' 关闭）", v)
+			}
+		})
 	}
 }

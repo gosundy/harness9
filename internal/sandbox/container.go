@@ -122,11 +122,12 @@ func (c *Container) Start(ctx context.Context) error {
 		"--label", "harness9=1",
 		"--cap-drop", "all",
 		"--cap-add", "DAC_OVERRIDE",
+		"--cap-add", "SETUID",
+		"--cap-add", "SETGID",
 		"--security-opt", "no-new-privileges:true",
 		"--pids-limit", fmt.Sprintf("%d", c.cfg.PidsLimit),
 		"--cpus", c.cfg.CPUs,
 		"--memory", c.cfg.Memory,
-		"--network", "none",
 		"--tmpfs", "/tmp:size=256m,nosuid,noexec,nodev",
 		// -v 语法不依赖逗号分隔，对含逗号的路径安全；等价于 --mount type=bind。
 		"-v", fmt.Sprintf("%s:%s", c.workDir, c.workDir),

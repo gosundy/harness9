@@ -127,13 +127,13 @@ type AgentEngine struct {
 	nudgeText          string              // nudge 提示文本
 }
 
-// NewAgentEngine 创建新的 AgentEngine。默认值：maxTurns=50, toolTimeout=60s。
+// NewAgentEngine 创建新的 AgentEngine。默认值：maxTurns=500, toolTimeout=60s。
 func NewAgentEngine(p provider.LLMProvider, r tools.Registry, workDir string, opts ...Option) *AgentEngine {
 	e := &AgentEngine{
 		provider:    p,
 		registry:    r,
 		workDir:     workDir,
-		maxTurns:    50,
+		maxTurns:    500,
 		toolTimeout: 60 * time.Second,
 	}
 	for _, opt := range opts {

@@ -116,9 +116,6 @@ Flags:
 		log.Fatal(logfmt.FormatMsg("main", fmt.Sprintf("加载 skills 失败: %v", err)))
 	}
 
-	// 构建 System Prompt（基础 prompt + AGENTS.md + skills 索引）
-	promptBuilder := harctx.NewPromptBuilder(workDir, skillsIndex).WithTodoEnabled(true).WithOffloadEnabled(true)
-
 	modelName := os.Getenv("LLM_MODEL")
 	if modelName == "" {
 		modelName = "openai/gpt-4o-mini"
@@ -155,11 +152,20 @@ Flags:
 		var sandboxErr error
 		sandboxEnv, sandboxErr = sandboxMgr.Create(ctx, workDir)
 		if sandboxErr != nil {
-			log.Fatal(logfmt.FormatMsg("main", fmt.Sprintf("创建主 Agent Sandbox 失败: %v", sandboxErr)))
+			log.Print(logfmt.FormatMsg("main", fmt.Sprintf("Sandbox 启动失败，已降级为本地进程模式: %v", sandboxErr)))
+			sandboxMgr = nil
+			sandboxEnv = nil
+		} else {
+			defer sandboxMgr.DestroyAll(ctx)
 		}
-		defer sandboxMgr.DestroyAll(ctx)
 	}
 	// ---- Sandbox 系统接线（续：工具注入见下）----
+
+	// 构建 System Prompt（基础 prompt + AGENTS.md + skills 索引），现已可访问 sandboxEnv
+	promptBuilder := harctx.NewPromptBuilder(workDir, skillsIndex).
+		WithTodoEnabled(true).
+		WithOffloadEnabled(true).
+		WithSandboxContext(sandboxEnv != nil)
 
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
