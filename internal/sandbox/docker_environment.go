@@ -8,7 +8,7 @@ import (
 )
 
 // DockerEnvironment 通过 docker exec 在 Docker 容器内执行 bash 命令，
-// 提供 OS 级进程隔离（独立 namespace、capability 限制、网络禁用）。
+// 提供 OS 级进程隔离（独立 namespace、capability 限制）。
 // 文件读写通过 bind mount 共享 workDir 与宿主机，保持文件系统视图一致。
 type DockerEnvironment struct {
 	containerID string // Docker container ID（完整 ID）
