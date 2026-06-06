@@ -483,7 +483,7 @@ Provider 实现者需注意：`convertMessages()` 方法应负责将 `schema.Mes
 Agent 循环通过以下三种机制确保不会无限运行：
 
 1. **自然终止**: 模型不再发起 ToolCall（`len(responseMsg.ToolCalls) == 0`）
-2. **MaxTurns**: 超过最大 Turn 数（默认 50，可通过 `WithMaxTurns` 配置）
+2. **MaxTurns**: 超过最大 Turn 数（默认 500，可通过 `WithMaxTurns` 配置）
 3. **Context 取消**: 外部调用 `cancel()` 或 `context.WithTimeout` 到期
 
 #### Context 管理
