@@ -253,7 +253,7 @@ harness9 内置一个 **`general-purpose`（通用）子代理**，设计对标 
 [Sandbox] 3a2f (main) Running │ 7b1c (sub-1) Running
 ```
 
-- **OS 级隔离**：独立进程空间、网络完全禁用（fail-closed）、Capability 最小化（`--cap-drop all`）、防 fork bomb（`--pids-limit 256`）
+- **OS 级隔离**：独立进程空间、Capability 最小化（`--cap-drop all`）、防 fork bomb（`--pids-limit 256`）
 - **透明路由**：`bash` 命令通过 `docker exec` 进容器，文件工具通过 bind mount 共享 workDir——Agent 行为不变，无需修改 prompt
 - **Agent 级隔离**：主 Agent 和每个 Sub-Agent 各自拥有独立 Sandbox 容器，互不影响
 - **TUI SandboxBar**：StatusBar 下方实时展示所有活跃 Sandbox 的 ID 和状态（绿=Running、黄=Pending、红=Failed）
@@ -326,7 +326,7 @@ for evt := range stream {
 | **Provider**   | LLM 统一接口，OpenAI / Anthropic 适配器，实际 token 用量提取                                           | ✅   |
 | **Schema**     | 跨组件共享的核心数据类型（Message、ToolCall、Usage 等）                                                  | ✅   |
 | **Tools**      | 工具注册表 + 内置工具（bash / read_file（offset/limit 分页）/ write_file / edit_file / todo_write / memory_write / memory_search）                 | ✅   |
-| **Sandbox**    | Docker 容器级隔离：OS 级进程沙箱（cap-drop/no-new-privileges/network=none）、Agent 级独立容器、bind mount 工具透明路由、TUI SandboxBar、孤儿容器回收；`SANDBOX_ENABLED=true` 启用 | ✅   |
+| **Sandbox**    | Docker 容器级隔离：OS 级进程沙箱（cap-drop/no-new-privileges）、Agent 级独立容器、bind mount 工具透明路由、TUI SandboxBar、孤儿容器回收；`SANDBOX_ENABLED=true` 启用 | ✅   |
 | **Env**        | 零依赖 `.env` 配置加载器                                                                        | ✅   |
 
 
