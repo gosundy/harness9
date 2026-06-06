@@ -1,6 +1,6 @@
 # harness9
 
-**轻量级、功能完备、生产可用的 Go Agent Harness 框架**
+**Local-First · 轻量级 · 功能完备 · 生产可用的通用 Agent 框架**
 
 ---
 
@@ -17,6 +17,7 @@
 
 | 原则       | 说明                           |
 | -------- | ---------------------------- |
+| **Local-First** | 数据全部存储在本机（SQLite、tool_results、plans），工具在本地 Docker 容器内执行，无云端依赖，代码不离机 |
 | **简洁**   | 最小化抽象层，代码直白易读，极少的直接依赖        |
 | **完备**   | 覆盖 Agent 运行所需的全部核心模块         |
 | **生产可用** | 错误恢复、上下文管理、超时控制、并发工具执行等生产级特性 |
@@ -247,7 +248,7 @@ harness9 内置一个 **`general-purpose`（通用）子代理**，设计对标 
 
 ### Sandbox（Docker 容器级隔离）
 
-在 `.env` 中设置 `SANDBOX_ENABLED=true`，所有工具调用将在独立 Docker 容器内执行：
+harness9 默认在本地 Docker 容器内执行所有工具调用（需本地安装并运行 Docker）。Docker 不可用时自动降级为本地进程模式，Agent 行为不变。
 
 ```
 [Sandbox] 3a2f (main) Running │ 7b1c (sub-1) Running
@@ -260,9 +261,11 @@ harness9 内置一个 **`general-purpose`（通用）子代理**，设计对标 
 - **孤儿回收**：以 `label=harness9=1` 标记所有管理的容器，进程崩溃后下次启动自动清理残留容器
 
 ```bash
-# 启用 Sandbox
-echo "SANDBOX_ENABLED=true" >> .env
+# Sandbox 默认开启，直接启动即可
 harness9
+
+# 如需关闭 Sandbox（不使用 Docker 容器）
+echo "SANDBOX_ENABLED=false" >> .env
 ```
 
 详见 [Sandbox 沙箱系统](docs/核心功能/sandbox.md)。
@@ -326,7 +329,7 @@ for evt := range stream {
 | **Provider**   | LLM 统一接口，OpenAI / Anthropic 适配器，实际 token 用量提取                                           | ✅   |
 | **Schema**     | 跨组件共享的核心数据类型（Message、ToolCall、Usage 等）                                                  | ✅   |
 | **Tools**      | 工具注册表 + 内置工具（bash / read_file（offset/limit 分页）/ write_file / edit_file / todo_write / memory_write / memory_search）                 | ✅   |
-| **Sandbox**    | Docker 容器级隔离：OS 级进程沙箱（cap-drop/no-new-privileges）、Agent 级独立容器、bind mount 工具透明路由、TUI SandboxBar、孤儿容器回收；`SANDBOX_ENABLED=true` 启用 | ✅   |
+| **Sandbox**    | Docker 容器级隔离：OS 级进程沙箱（cap-drop/no-new-privileges）、Agent 级独立容器、bind mount 工具透明路由、TUI SandboxBar、孤儿容器回收；默认开启；`SANDBOX_ENABLED=false` 关闭 | ✅   |
 | **Env**        | 零依赖 `.env` 配置加载器                                                                        | ✅   |
 
 
