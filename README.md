@@ -2,6 +2,8 @@
 
 **Local-First · 轻量级 · 功能完备 · 生产可用的通用 Agent 框架**
 
+[![Visitors](https://visitor-badge.laobi.icu/badge?page_id=ZhangShenao.harness9)](https://github.com/ZhangShenao/harness9)
+
 ---
 
 ![harness9 欢迎界面](welcome.png)
@@ -406,6 +408,12 @@ harness9/
 | Claude Agent SDK | Anthropic | 官方 SDK，仅支持 Anthropic，黑盒循环；harness9 多 Provider，透明可控的显式循环，Go 原生 |
 | OpenAI Agent SDK | OpenAI | Python，Handoffs 多 Agent，依赖 OpenAI Compaction API；harness9 Go 原生，自持压缩，无云 API 依赖 |
 
+
+---
+
+## Star History
+
+[![Star History Chart](https://api.star-history.com/svg?repos=ZhangShenao/harness9&type=Date)](https://star-history.com/#ZhangShenao/harness9&Date)
 
 ---
 
