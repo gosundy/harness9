@@ -183,3 +183,30 @@ func TestHookRegistry_BeforeAsk_WithApprovalFn_Allow(t *testing.T) {
 		t.Fatalf("expected success when user approves: %s", result.Output)
 	}
 }
+
+// TestHookRegistry_AllowThenAsk 验证白名单修复：前置 hook 显式 Allow 后，后续 hook 的 Ask 不再弹出审批。
+// 复现场景：permHook 返回 Allow（命中白名单），dangerHook 返回 Ask（命中危险模式），
+// 用户不应被再次要求审批。
+// 注意：此处使用 "echo" 而非 "bash"，因为 inner registry 仅注册了 echo stub；
+// 行为上与真实 bash+permHook+dangerHook 链等价——允许/拒绝决策在工具分发前已完成。
+func TestHookRegistry_AllowThenAsk(t *testing.T) {
+	inner := newInnerWithEcho(t)
+	var log []string
+	allowHook := &recordHook{id: "perm", log: &log, beforeDec: hooks.Allow()}
+	askHook := &recordHook{id: "danger", log: &log, beforeDec: hooks.Ask("dangerous", "high")}
+	hr := hooks.NewHookRegistry(inner, allowHook, askHook)
+
+	// ApprovalFunc 若被调用则代表 bug 仍存在。
+	asked := false
+	ctx := hooks.WithApprovalFn(context.Background(), func(_ context.Context, _ schema.ToolCall, _, _ string) hooks.ApprovalResponse {
+		asked = true
+		return hooks.ApprovalResponse{Approved: true}
+	})
+	result := hr.Execute(ctx, schema.ToolCall{Name: "echo", ID: "9"})
+	if result.IsError {
+		t.Fatalf("expected success: %s", result.Output)
+	}
+	if asked {
+		t.Fatal("ApprovalFunc should not be called when a prior hook explicitly returned Allow")
+	}
+}
