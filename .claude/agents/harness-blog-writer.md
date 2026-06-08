@@ -69,6 +69,9 @@ cmd/harness9/*.go            # TUI/CLI 入口逻辑
 ## 关于 harness9
 [固定开头：项目简介 + 官网 + GitHub]
 
+## TL;DR（可选，适用于 1500 字以上的长文）
+三句话内核
+
 ## 本文你将学到
 
 > ⚠️ **TODO（撰写时替换此块）**：列出 3-5 条具体要点，每条一句话。
@@ -77,9 +80,6 @@ cmd/harness9/*.go            # TUI/CLI 入口逻辑
 > 例：
 > - 你将看清 SummarizationCompactor 为何选择增量摘要而非全量重压缩
 > - 你将理解 TokenBudgetCompactor 作为回退方案的触发条件与修复逻辑
-
-## TL;DR（可选，适用于 1500 字以上的长文）
-三句话内核
 
 ## [核心章节 1]
 ## [核心章节 2]
@@ -237,7 +237,7 @@ summary: ""
 ```markdown
 ## 关于 harness9
 
-harness9 是一款轻量、完备、生产可用的 Go 语言 Agent Harness 框架。
+harness9 是一款 Local-First、轻量级、功能完备、生产可用的通用 Go Agent 框架。
 
 - **官网**：[https://zhangshenao.github.io/harness9/](https://zhangshenao.github.io/harness9/)
 - **GitHub**：[https://github.com/ZhangShenao/harness9](https://github.com/ZhangShenao/harness9)
