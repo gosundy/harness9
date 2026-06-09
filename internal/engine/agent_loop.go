@@ -60,6 +60,11 @@ type PromptBuilder interface {
 	Build() string
 }
 
+// WithEngineObserver 注册引擎生命周期观察者，供可观测层（OpenTelemetry 等）无侵入接入。
+func WithEngineObserver(o EngineObserver) Option {
+	return func(e *AgentEngine) { e.observer = o }
+}
+
 // WithPromptBuilder 设置自定义 PromptBuilder。未设置时使用内置默认文案。
 func WithPromptBuilder(pb PromptBuilder) Option {
 	return func(e *AgentEngine) { e.promptBuilder = pb }
@@ -125,6 +130,7 @@ type AgentEngine struct {
 	permissionMode     PermissionMode      // 全局权限策略，影响审批行为
 	nudgeInterval      int                 // >0 时每隔该轮数注入一次记忆 nudge
 	nudgeText          string              // nudge 提示文本
+	observer           EngineObserver      // 可选，nil 时自动退化为 noopObserver
 }
 
 // NewAgentEngine 创建新的 AgentEngine。默认值：maxTurns=500, toolTimeout=60s。
@@ -205,6 +211,23 @@ func (e *AgentEngine) Run(ctx context.Context, userPrompt string) error {
 func (e *AgentEngine) runLoop(ctx context.Context, userPrompt string, logPrefix string, em emitter) error {
 	log.Print(logfmt.FormatLoopStart(logPrefix, e.workDir, e.maxTurns, e.toolTimeout, e.maxConcurrentTools))
 
+	// 可观测层接入：若未注入 observer 则退化为 noop。
+	obs := e.observer
+	if obs == nil {
+		obs = noopObserver{}
+	}
+	// 提前读取 sessionID 用于 span 属性（在 mu.RLock 快照之前）。
+	e.mu.RLock()
+	var sessIDForObs string
+	if e.session != nil {
+		sessIDForObs = e.session.SessionID()
+	}
+	e.mu.RUnlock()
+	var interactionErr error
+	turnCount := 0
+	ctx = obs.OnInteractionStart(ctx, sessIDForObs, userPrompt)
+	defer func() { obs.OnInteractionEnd(ctx, turnCount, interactionErr) }()
+
 	// 在循环开始时快照 session 和 compactor，避免与 TUI goroutine 的 SetSession 产生数据竞争。
 	e.mu.RLock()
 	sess := e.session
@@ -244,11 +267,11 @@ func (e *AgentEngine) runLoop(ctx context.Context, userPrompt string, logPrefix 
 		}
 	}()
 
-	turnCount := 0
 	overallStart := time.Now()
 
 	for {
 		turnCount++
+		turnCtx := obs.OnTurnStart(ctx, turnCount)
 
 		if e.maxTurns > 0 && turnCount > e.maxTurns {
 			return fmt.Errorf("已达最大 Turn 数 (%d)，循环终止", e.maxTurns)
@@ -299,8 +322,9 @@ func (e *AgentEngine) runLoop(ctx context.Context, userPrompt string, logPrefix 
 		log.Print(logfmt.FormatTurnStart(logPrefix, turnCount, len(compactedHistory), len(availableTools)))
 
 		llmStart := time.Now()
-		responseMsg, usage, err := em.generate(ctx, turnCount, compactedHistory, availableTools)
+		responseMsg, usage, err := em.generate(turnCtx, turnCount, compactedHistory, availableTools)
 		if err != nil {
+			interactionErr = err
 			return fmt.Errorf("模型生成失败 (turn %d): %w", turnCount, err)
 		}
 		llmDuration := time.Since(llmStart)
@@ -314,11 +338,12 @@ func (e *AgentEngine) runLoop(ctx context.Context, userPrompt string, logPrefix 
 
 		if len(responseMsg.ToolCalls) == 0 {
 			log.Print(logfmt.FormatTurnDone(logPrefix, turnCount, llmDuration, time.Since(overallStart)))
+			obs.OnTurnEnd(turnCtx, turnCount, false)
 			break
 		}
 
 		toolStart := time.Now()
-		results := e.executeTools(ctx, turnCount, responseMsg.ToolCalls, logPrefix, em)
+		results := e.executeTools(turnCtx, turnCount, responseMsg.ToolCalls, logPrefix, em)
 		toolDuration := time.Since(toolStart)
 
 		for i, toolCall := range responseMsg.ToolCalls {
@@ -330,6 +355,7 @@ func (e *AgentEngine) runLoop(ctx context.Context, userPrompt string, logPrefix 
 		}
 
 		log.Print(logfmt.FormatObservation(logPrefix, turnCount, len(contextHistory), llmDuration, toolDuration, time.Since(turnStart)))
+		obs.OnTurnEnd(turnCtx, turnCount, true)
 	}
 
 	e.saveHistoryWith(ctx, sess, contextHistory, startLen)
