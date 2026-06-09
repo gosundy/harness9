@@ -234,7 +234,7 @@ evals.WriteMarkdown(report, "eval-report.md")
 
 ### 3.3 新增 Eval 用例的规范
 
-Feature 开发完成后，**必须**在 `internal/evals/dataset/` 下新增对应的黄金用例（参见 [AGENTS.md §5.8 测试与评估规范](../../AGENTS.md)）：
+Feature 开发完成后，**必须**在 `internal/evals/dataset/` 下新增对应的黄金用例（参见 [AGENTS.md §5.8 测试与评估规范](https://github.com/ZhangShenao/harness9/blob/master/AGENTS.md)）：
 
 - 每个功能至少覆盖**正向用例**（功能正常工作）和**反向用例**（约束被正确执行）
 - `SetupHermeticEnv` 首行调用，`NoErrorAssertion` 或 `ErrorAssertion` 必选

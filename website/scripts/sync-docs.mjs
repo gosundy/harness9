@@ -33,6 +33,7 @@ const CORE_ORDER = [
   'sub-agent',
   'file-system',
   'cli',
+  'eval',
 ]
 
 function toSlug(filename) {
