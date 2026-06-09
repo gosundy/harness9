@@ -3,6 +3,7 @@ package observability
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"go.opentelemetry.io/otel"
@@ -42,15 +43,22 @@ func Setup(ctx context.Context, cfg Config) (*Providers, error) {
 		return nil, fmt.Errorf("创建 otel resource 失败: %w", err)
 	}
 
+	// 仅对 http:// 前缀的端点使用非加密传输；https:// 端点（如 Langfuse、Grafana Cloud）
+	// 必须保留 TLS，否则握手失败。
+	insecure := strings.HasPrefix(cfg.OTLPEndpoint, "http://")
+
 	var spanExporter sdktrace.SpanExporter
 	switch cfg.Exporter {
 	case ExporterStdout:
 		spanExporter, err = stdouttrace.New(stdouttrace.WithPrettyPrint())
 	case ExporterOTLP:
-		spanExporter, err = otlptracehttp.New(ctx,
+		traceOpts := []otlptracehttp.Option{
 			otlptracehttp.WithEndpointURL(cfg.OTLPEndpoint),
-			otlptracehttp.WithInsecure(),
-		)
+		}
+		if insecure {
+			traceOpts = append(traceOpts, otlptracehttp.WithInsecure())
+		}
+		spanExporter, err = otlptracehttp.New(ctx, traceOpts...)
 	default:
 		return noopProviders(), nil
 	}
@@ -73,10 +81,13 @@ func Setup(ctx context.Context, cfg Config) (*Providers, error) {
 	case ExporterStdout:
 		metricExporter, err = stdoutmetric.New()
 	case ExporterOTLP:
-		metricExporter, err = otlpmetrichttp.New(ctx,
+		metricOpts := []otlpmetrichttp.Option{
 			otlpmetrichttp.WithEndpointURL(cfg.OTLPEndpoint),
-			otlpmetrichttp.WithInsecure(),
-		)
+		}
+		if insecure {
+			metricOpts = append(metricOpts, otlpmetrichttp.WithInsecure())
+		}
+		metricExporter, err = otlpmetrichttp.New(ctx, metricOpts...)
 	}
 	if err != nil {
 		_ = tp.Shutdown(ctx) // 清理已创建的 tracer provider

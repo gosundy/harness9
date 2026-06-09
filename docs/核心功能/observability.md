@@ -447,20 +447,122 @@ evals.WriteMarkdown(report, "eval-report.md")
 | `OTEL_ENABLED` | `false` | `true` 启用，其他值关闭（默认 noop 零开销） |
 | `OTEL_SERVICE_NAME` | `harness9` | 服务名，在 Trace 平台上标识来源 |
 | `OTEL_EXPORTER_TYPE` | `noop` | `noop` / `stdout` / `otlp` |
-| `OTEL_EXPORTER_OTLP_ENDPOINT` | — | OTLP HTTP 端点，`otlp` 时必填 |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | — | OTLP HTTP 端点（http:// 自动不加密，https:// 保留 TLS） |
+| `OTEL_EXPORTER_OTLP_HEADERS` | — | OTEL 标准变量，追加到每个请求的 HTTP header（格式：`key=val,key2=val2`） |
+
+---
 
 ### 5.2 接入 Langfuse（推荐）
 
-[Langfuse](https://langfuse.com) 是专为 LLM 应用设计的可观测平台，原生支持 OpenTelemetry，提供 Trace 可视化、Token 费用追踪、用户行为分析。
+[Langfuse](https://langfuse.com) 是专为 LLM 应用设计的可观测平台，原生支持 OpenTelemetry，提供 Trace 可视化、Token 费用分析、会话回放、质量评分。
 
+#### 第一步：注册账号
+
+前往 [https://cloud.langfuse.com/auth/sign-up](https://cloud.langfuse.com/auth/sign-up) 注册，或参考官方文档自建部署（需 v3.22.0+）。
+
+#### 第二步：创建 Project 并获取 API Key
+
+1. 登录后在左侧导航点击 **+ New Project**，填写项目名
+2. 进入项目 → 左侧导航 **Settings → API Keys**
+3. 点击 **Create new API key**，复制生成的：
+   - **Public Key**（格式：`pk-lf-xxxxxxxx`）
+   - **Secret Key**（格式：`sk-lf-xxxxxxxx`，仅在创建时显示一次，请立即保存）
+
+#### 第三步：生成 Base64 认证字符串
+
+Langfuse 使用 HTTP Basic Auth（`Public Key:Secret Key` 的 Base64 编码）：
+
+```bash
+# macOS / Linux
+AUTH=$(echo -n "pk-lf-YOUR_PUBLIC_KEY:sk-lf-YOUR_SECRET_KEY" | base64)
+
+# GNU/Linux（较长 key 可能自动折行，加 -w 0 防止）
+AUTH=$(echo -n "pk-lf-YOUR_PUBLIC_KEY:sk-lf-YOUR_SECRET_KEY" | base64 -w 0)
+
+echo $AUTH   # 输出类似：cGstbGYtMTIzNDU2OnNrLWxmLTc4OTAxMg==
+```
+
+#### 第四步：设置环境变量
+
+**EU 区域（默认）：**
 ```bash
 export OTEL_ENABLED=true
 export OTEL_EXPORTER_TYPE=otlp
-export OTEL_EXPORTER_OTLP_ENDPOINT=https://cloud.langfuse.com/api/public/otel
-# Langfuse 通过 HTTP Basic Auth 认证，将 Public Key:Secret Key 编码为 Base64 传入
-# 可在 OTEL_EXPORTER_OTLP_HEADERS 中设置（按平台文档配置）
+export OTEL_EXPORTER_OTLP_ENDPOINT="https://cloud.langfuse.com/api/public/otel"
+export OTEL_EXPORTER_OTLP_HEADERS="Authorization=Basic ${AUTH},x-langfuse-ingestion-version=4"
+```
+
+**US 区域：**
+```bash
+export OTEL_EXPORTER_OTLP_ENDPOINT="https://us.cloud.langfuse.com/api/public/otel"
+```
+
+**JP 区域：**
+```bash
+export OTEL_EXPORTER_OTLP_ENDPOINT="https://jp.cloud.langfuse.com/api/public/otel"
+```
+
+**自建部署（Langfuse Self-Hosted）：**
+```bash
+export OTEL_EXPORTER_OTLP_ENDPOINT="https://your-langfuse-host/api/public/otel"
+# 若 self-hosted 使用 http（无 TLS），改用：
+export OTEL_EXPORTER_OTLP_ENDPOINT="http://your-langfuse-host/api/public/otel"
+```
+
+> **说明**：`x-langfuse-ingestion-version=4` 是 Langfuse Cloud Fast Preview 所需 header，开启后 Trace 数据实时出现在控制台（否则有几秒延迟）。自建部署可省略此 header。
+
+#### 第五步：启动 harness9
+
+```bash
 harness9
 ```
+
+开始与 Agent 对话，产生几次工具调用后，打开 Langfuse 控制台 → **Traces** 标签即可看到数据。
+
+#### Langfuse 控制台数据说明
+
+harness9 的 Span 在 Langfuse 中展示为：
+
+```
+Trace: harness9.interaction
+│   session.id = "abc123..."
+│   agent.turn = 3
+│
+└── Span: harness9.turn  (turn=1)
+    ├── Span: harness9.llm_request
+    │       llm.tokens.input = 4821
+    │       llm.tokens.output = 312
+    ├── Span: harness9.tool  (tool.name="bash", tool.success=true)
+    └── Span: harness9.tool  (tool.name="read_file", tool.success=true)
+```
+
+Langfuse 会自动将 Token 数换算为费用估算（在 **Analytics → Model Usage** 中查看）。
+
+#### 一键启动脚本（写入 `.env`）
+
+将以下内容追加到项目根目录的 `.env` 文件，后续 `harness9` 启动时自动生效：
+
+```bash
+# Langfuse Observability
+OTEL_ENABLED=true
+OTEL_EXPORTER_TYPE=otlp
+OTEL_EXPORTER_OTLP_ENDPOINT=https://cloud.langfuse.com/api/public/otel
+OTEL_EXPORTER_OTLP_HEADERS=Authorization=Basic <你的 BASE64 AUTH>,x-langfuse-ingestion-version=4
+```
+
+> **安全提示**：`.env` 文件已在 `.gitignore` 中，不会进入 Git 仓库。但如在 CI 中使用，请将 `OTEL_EXPORTER_OTLP_HEADERS` 设置为 CI Secret 变量，避免 API Key 明文出现在日志中。
+
+#### 常见问题排查
+
+| 症状 | 可能原因 | 解决方案 |
+|------|----------|---------|
+| Langfuse 控制台无数据 | `AUTH` 变量未正确 base64 编码 | 检查 `echo $AUTH` 输出，确认无换行符 |
+| `401 Unauthorized` 错误 | Public Key 和 Secret Key 顺序错误 | 格式必须是 `pk-lf-...:sk-lf-...`（Public Key 在前） |
+| Trace 出现但有延迟 | 缺少 `x-langfuse-ingestion-version=4` | 检查 `OTEL_EXPORTER_OTLP_HEADERS` 中是否包含此 header |
+| `connection refused` | endpoint 区域选错 | 确认你的账号注册区域（EU/US/JP），使用对应 endpoint |
+| harness9 启动后报 TLS 错误 | 旧版 endpoint 使用了 http:// | 改为 https:// 前缀 |
+
+---
 
 ### 5.3 接入 Jaeger（本地开发）
 
