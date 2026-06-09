@@ -101,6 +101,11 @@ func Setup(ctx context.Context, cfg Config) (*Providers, error) {
 	return &Providers{Tracer: tracer, Meter: meter, Shutdown: shutdown}, nil
 }
 
+// NewNoopProviders 返回零开销的 noop 实现，供测试使用。
+func NewNoopProviders() *Providers {
+	return noopProviders()
+}
+
 // noopProviders 返回零开销的 noop 实现。
 func noopProviders() *Providers {
 	return &Providers{
