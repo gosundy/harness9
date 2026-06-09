@@ -3,6 +3,7 @@ package evals
 import (
 	"fmt"
 	"strings"
+	"time"
 )
 
 // Failure 描述单次断言失败的详情。
@@ -35,6 +36,7 @@ type Result struct {
 	RunError          error
 	Failures          []*Failure
 	Warnings          []*Failure
+	Duration          time.Duration
 }
 
 // Case 是评估用例。完整定义在 harness.go 中；
