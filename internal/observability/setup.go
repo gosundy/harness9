@@ -2,6 +2,7 @@ package observability
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -14,6 +15,7 @@ import (
 	"go.opentelemetry.io/otel/exporters/stdout/stdoutmetric"
 	"go.opentelemetry.io/otel/exporters/stdout/stdouttrace"
 	"go.opentelemetry.io/otel/metric"
+	noopmetric "go.opentelemetry.io/otel/metric/noop"
 	"go.opentelemetry.io/otel/propagation"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/resource"
@@ -154,11 +156,18 @@ func Setup(ctx context.Context, cfg Config) (*Providers, error) {
 	meter := otel.Meter(cfg.ServiceName)
 
 	shutdown := func(ctx context.Context) error {
-		_ = tp.Shutdown(ctx)
-		if mp != nil {
-			_ = mp.Shutdown(ctx)
+		// 两个 provider 均尝试关闭，不因前者失败而跳过后者。
+		// 使用 errors.Join 合并所有错误（Go 1.20+），调用方能感知全部失败原因。
+		var tpErr, mpErr error
+		if err := tp.Shutdown(ctx); err != nil {
+			tpErr = fmt.Errorf("trace provider shutdown: %w", err)
 		}
-		return nil
+		if mp != nil {
+			if err := mp.Shutdown(ctx); err != nil {
+				mpErr = fmt.Errorf("metric provider shutdown: %w", err)
+			}
+		}
+		return errors.Join(tpErr, mpErr)
 	}
 	// ForceFlush 直接绑定 SDK TracerProvider（不经过全局 wrapper），确保类型断言成功。
 	forceFlush := func(ctx context.Context) error {
@@ -173,10 +182,12 @@ func NewNoopProviders() *Providers {
 }
 
 // noopProviders 返回零开销的 noop 实现。
+// tracer 使用 trace/noop，meter 使用 metric/noop，两者均不依赖全局 OTEL provider，
+// 确保即使在全局 provider 未初始化时也能安全调用。
 func noopProviders() *Providers {
 	return &Providers{
 		Tracer:     noop.NewTracerProvider().Tracer("harness9"),
-		Meter:      otel.GetMeterProvider().Meter("harness9"),
+		Meter:      noopmetric.NewMeterProvider().Meter("harness9"),
 		Shutdown:   func(_ context.Context) error { return nil },
 		ForceFlush: func(_ context.Context) error { return nil },
 	}
