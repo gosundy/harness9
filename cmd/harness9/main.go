@@ -31,6 +31,7 @@ import (
 	"github.com/harness9/internal/logfmt"
 	"github.com/harness9/internal/ltm"
 	"github.com/harness9/internal/memory"
+	"github.com/harness9/internal/observability"
 	"github.com/harness9/internal/permission"
 	"github.com/harness9/internal/planning"
 	"github.com/harness9/internal/provider"
@@ -108,6 +109,24 @@ Flags:
 		log.Fatal(logfmt.FormatMsg("main", fmt.Sprintf("加载环境配置失败: %v", err)))
 	}
 
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
+	// ---- Observability（OTEL）接线 ----
+	// 默认 noop（零开销），通过 OTEL_ENABLED=true 激活。
+	otelCfg := observability.ConfigFromEnv()
+	otelProviders, err := observability.Setup(ctx, otelCfg)
+	if err != nil {
+		log.Print(logfmt.FormatMsg("main", fmt.Sprintf("OTEL 初始化失败，已降级为 noop: %v", err)))
+		otelProviders = observability.NewNoopProviders()
+	}
+	defer func() {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = otelProviders.Shutdown(shutdownCtx)
+	}()
+	// ---- Observability 接线（续：TracingProvider + Hook + Observer 见下）----
+
 	workDir := cwd
 
 	// 加载 Skills（workdir/skills/，目录不存在时静默返回空 Index）
@@ -120,13 +139,19 @@ Flags:
 	if modelName == "" {
 		modelName = "openai/gpt-4o-mini"
 	}
-	llm, err := provider.NewOpenAIProvider(modelName)
+	rawLLM, err := provider.NewOpenAIProvider(modelName)
 	if err != nil {
 		log.Fatal(logfmt.FormatMsg("main", fmt.Sprintf("创建 Provider 失败: %v", err)))
 	}
+	// llm 声明为接口类型，以便后续替换为 TracingProvider 包装器。
+	var llm provider.LLMProvider = rawLLM
 
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer stop()
+	// 将 llm 包装为 TracingProvider（为 LLM 调用创建 OTEL Span）
+	if tp, tpErr := observability.NewTracingProvider(llm, otelProviders, modelName); tpErr != nil {
+		log.Print(logfmt.FormatMsg("main", fmt.Sprintf("TracingProvider 创建失败（使用原始 provider）: %v", tpErr)))
+	} else {
+		llm = tp
+	}
 
 	// ---- Sandbox 系统接线 ----
 	sandboxCfg := sandbox.DefaultConfig()
@@ -235,6 +260,14 @@ Flags:
 	// NewFileHook 每次工具调用时从磁盘重新读取规则，确保 TUI 写入白名单后下次调用立即生效。
 	permHook := permission.NewFileHook(settingsPath)
 
+	// ObservabilityHook：为工具调用创建 OTEL Span（fail-open，创建失败不阻断）
+	var obsHook *observability.ObservabilityHook
+	if oh, ohErr := observability.NewObservabilityHook(otelProviders); ohErr != nil {
+		log.Print(logfmt.FormatMsg("main", fmt.Sprintf("ObservabilityHook 创建失败（跳过）: %v", ohErr)))
+	} else {
+		obsHook = oh
+	}
+
 	modelLimits := provider.GetModelLimits(modelName)
 
 	// agentMaxTurns 是子代理的最大 Turn 数。
@@ -303,8 +336,13 @@ Flags:
 	}
 	// ---- Sub-Agent 接线结束 ----
 
-	// Hook 执行顺序：PermissionHook（配置规则）→ DangerHook（内置模式）→ OffloadHook（大输出）
-	hookReg := hooks.NewHookRegistry(registry, permHook, dangerHook, offloadHook)
+	// Hook 执行顺序：PermissionHook（配置规则）→ DangerHook（内置模式）→ OffloadHook（大输出）→ ObservabilityHook（OTEL Span）
+	// ObservabilityHook 放最后：纯观测，不干预工具执行决策。
+	mainHooks := []hooks.ToolHook{permHook, dangerHook, offloadHook}
+	if obsHook != nil {
+		mainHooks = append(mainHooks, obsHook)
+	}
+	hookReg := hooks.NewHookRegistry(registry, mainHooks...)
 
 	// SummarizationCompactor 使用同一 LLM 生成摘要，内置 TokenBudgetCompactor 作为错误回退。
 	// 注入长期记忆 Extractor：压缩前从 head 消息提取持久事实（fail-open）。
@@ -313,14 +351,26 @@ Flags:
 		memory.WithMemoryExtractor(ltm.NewExtractor(llm, ltmStore)),
 	)
 
-	eng := engine.NewAgentEngine(llm, hookReg, workDir,
+	// OTELEngineObserver：为 interaction/turn 创建 OTEL Span
+	var engineObserver engine.EngineObserver
+	if eo, eoErr := observability.NewOTELEngineObserver(otelProviders); eoErr != nil {
+		log.Print(logfmt.FormatMsg("main", fmt.Sprintf("OTELEngineObserver 创建失败（跳过）: %v", eoErr)))
+	} else {
+		engineObserver = eo
+	}
+
+	engOpts := []engine.Option{
 		engine.WithPromptBuilder(promptBuilder),
 		engine.WithSession(sess),
 		engine.WithCompactor(compactor),
 		engine.WithContextWindow(modelLimits.ContextTokens),
 		engine.WithTodoStore(todoStore),
 		engine.WithMemoryNudge(10, "如果本轮对话中出现了值得跨会话长期保留的信息（用户偏好、稳定的项目知识、关键决策、可复用技能），请调用 memory_write 工具记录；否则忽略此提示。"),
-	)
+	}
+	if engineObserver != nil {
+		engOpts = append(engOpts, engine.WithEngineObserver(engineObserver))
+	}
+	eng := engine.NewAgentEngine(llm, hookReg, workDir, engOpts...)
 
 	if term.IsTerminal(os.Stdin.Fd()) {
 		log.Print(logfmt.FormatMsg("main", fmt.Sprintf("harness9 TUI 启动 │ workDir=%s", workDir)))

@@ -537,6 +537,8 @@ eng := engine.NewAgentEngine(p, r, workDir,
 | `WithPromptBuilder(pb)` | `PromptBuilder` | nil | 自定义 system prompt 构建器，nil 时使用内置默认文案 |
 | `WithPlanMode(mode)` | `planning.PlanMode` | Default | 初始执行模式；可运行时通过 `SetPlanMode` 更新 |
 | `WithTodoStore(s)` | `*planning.TodoStore` | nil | 绑定任务列表，启用跨会话 todo 持久化 |
+| `WithEngineObserver(o)` | `EngineObserver` | noopObserver | 注入生命周期观察者（OTEL Tracing 等），nil 时退化为 noop |
+| `WithMemoryNudge(n, text)` | `int, string` | 0, "" | 每隔 n 轮向防御性副本注入长期记忆提示，0 关闭 |
 
 运行时可通过 `eng.SetSession(sess)` 切换会话，`eng.SetPlanMode(mode)` 切换执行模式（均并发安全，内部使用 `sync.RWMutex`，但对当前正在运行的 `runLoop` 无影响）。
 
@@ -561,6 +563,36 @@ for evt := range stream {
 两种模式共享同一个 `AgentEngine` 实例和配置，运行时可自由选择。
 
 ## 6. 日志与可观测性
+
+### 6.1 EngineObserver 接口
+
+`EngineObserver` 是引擎为可观测层提供的唯一扩展接口。`runLoop` 在 4 个生命周期节点回调它：
+
+```go
+type EngineObserver interface {
+    OnInteractionStart(ctx, sessionID, prompt) context.Context  // runLoop 入口
+    OnInteractionEnd(ctx, turns, err)                           // runLoop 退出（defer 保证）
+    OnTurnStart(ctx, turn) context.Context                      // 每个 Turn 开始
+    OnTurnEnd(ctx, turn, hasToolCalls)                          // 每个 Turn 结束
+}
+```
+
+所有 `OnXxxStart` 方法返回增强 ctx（可携带 OTEL Span），供 LLM 调用和工具执行继承父链路。
+未注入时自动退化为零开销的 `noopObserver`。
+
+**自定义 Observer 注意事项**：实现 `OnInteractionStart` / `OnTurnStart` 时，除了用 `context.WithValue` 将 Span 存入自定义 key（供 `OnInteractionEnd` / `OnTurnEnd` 取用），还**必须**通过 `trace.ContextWithSpan(ctx, span)` 将 Span 写入 OTEL 标准 slot，否则下游的 `tracer.Start(ctx, ...)` 无法找到父节点，导致每个 Span 独立成为根节点：
+
+```go
+func (o *MyObserver) OnInteractionStart(ctx context.Context, sessionID, prompt string) context.Context {
+    ctx, span := o.tracer.Start(ctx, "my.interaction")
+    // ① 写入 OTEL 标准 slot——下游 tracer.Start 自动嵌套
+    ctx = trace.ContextWithSpan(ctx, span)
+    // ② 写入自定义 key——供 OnInteractionEnd 取用
+    return context.WithValue(ctx, mySpanKey{}, span)
+}
+```
+
+### 6.2 结构化日志
 
 引擎采用结构化日志格式，阻塞模式使用 `[engine]` 前缀，流式模式使用 `[engine-stream]` 前缀：
 
