@@ -1,0 +1,74 @@
+name: Eval CI
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+    branches: [master, main]
+
+env:
+  # Hermetic eval：清除所有 API Key，强制使用 ScriptedProvider
+  OPENAI_API_KEY: ""
+  ANTHROPIC_API_KEY: ""
+  HARNESS9_EVAL_HERMETIC: "1"
+  # OTEL 在 CI 中关闭（eval 使用 noop）
+  OTEL_ENABLED: "false"
+
+jobs:
+  unit-tests:
+    name: Unit Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Download dependencies
+        run: go mod download
+
+      - name: Run unit tests
+        run: go test ./... -count=1 -timeout=120s
+
+  eval:
+    name: Eval Suite (Quality Gate)
+    runs-on: ubuntu-latest
+    needs: unit-tests
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Download dependencies
+        run: go mod download
+
+      - name: Run eval dataset
+        run: |
+          go test ./internal/evals/... ./internal/evals/dataset/... \
+            -v -count=1 -timeout=120s 2>&1 | tee /tmp/eval-output.txt
+
+      - name: Upload eval results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: eval-results-${{ github.run_id }}
+          path: /tmp/eval-output.txt
+          retention-days: 30
+
+      - name: Report eval summary
+        if: always()
+        run: |
+          echo "## Eval Results" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          grep -E "^(--- PASS|--- FAIL|PASS|FAIL|✅|❌)" /tmp/eval-output.txt | \
+            while IFS= read -r line; do echo "- $line"; done >> $GITHUB_STEP_SUMMARY || true
+          echo "" >> $GITHUB_STEP_SUMMARY
+          PASS=$(grep -c "^--- PASS" /tmp/eval-output.txt || true)
+          FAIL=$(grep -c "^--- FAIL" /tmp/eval-output.txt || true)
+          echo "**通过**: $PASS | **失败**: $FAIL" >> $GITHUB_STEP_SUMMARY
