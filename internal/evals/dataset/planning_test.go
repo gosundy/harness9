@@ -85,3 +85,85 @@ func TestPlanning(t *testing.T) {
 	}
 	t.Logf("Planning 评估: %d/%d 通过", passed, passed+failed)
 }
+
+// TestPlanningExecution 验证从计划生成到执行的完整流程（2 个黄金用例）。
+func TestPlanningExecution(t *testing.T) {
+	evals.SetupHermeticEnv(t)
+
+	cases := []*evals.Case{
+		// 用例3：先用 todo_write 生成计划，再写入文件执行第一个 todo 项。
+		// 验证 AutoEdit 模式下 Planning + 执行的完整链路。
+		{
+			ID:       "planning/plan_then_execute",
+			Category: "planning",
+			Prompt:   "制定一个创建 hello.txt 的计划，然后执行第一步。",
+			Provider: evals.NewScriptedProvider(
+				// Turn 1：生成计划
+				evals.ScriptedTurn{
+					ToolCalls: []schema.ToolCall{
+						evals.MakeToolCall("tc1", "todo_write", `{"todos":[
+							{"id":"1","content":"创建 hello.txt","status":"pending"},
+							{"id":"2","content":"验证文件存在","status":"pending"}
+						]}`),
+					},
+				},
+				// Turn 2：执行第一步（写入文件）
+				evals.ScriptedTurn{
+					ToolCalls: []schema.ToolCall{
+						evals.MakeToolCall("tc2", "write_file", `{"path":"hello.txt","content":"Hello World"}`),
+					},
+				},
+				evals.ScriptedTurn{Text: "已创建 hello.txt，第一步完成。"},
+			),
+			Assertions: []evals.Assertion{
+				// 计划生成和执行均需触发
+				&evals.ToolCalledAssertion{ToolName: "todo_write"},
+				&evals.ToolCalledAssertion{ToolName: "write_file"},
+				&evals.NoErrorAssertion{},
+				&evals.MaxTurnsAssertion{Max: 4},
+			},
+		},
+
+		// 用例4：pure 探索模式——只用只读工具收集信息，不做任何写操作。
+		// 验证 LLM 在被明确要求"只分析不修改"时遵守约束。
+		{
+			ID:       "planning/exploration_only",
+			Category: "planning",
+			Prompt:   "分析当前目录结构，只读取信息，不要修改任何文件。",
+			Provider: evals.NewScriptedProvider(
+				evals.ScriptedTurn{
+					ToolCalls: []schema.ToolCall{
+						evals.MakeToolCall("tc1", "bash", `{"command":"ls -la"}`),
+					},
+				},
+				evals.ScriptedTurn{
+					ToolCalls: []schema.ToolCall{
+						evals.MakeToolCall("tc2", "bash", `{"command":"find . -name '*.go' | head -5"}`),
+					},
+				},
+				evals.ScriptedTurn{Text: "目录分析完成，未做任何修改。"},
+			),
+			Assertions: []evals.Assertion{
+				&evals.ToolCalledAssertion{ToolName: "bash", MinTimes: 2},
+				// 明确不应触发写操作
+				&evals.ToolNotCalledAssertion{ToolName: "write_file"},
+				&evals.ToolNotCalledAssertion{ToolName: "edit_file"},
+				&evals.NoErrorAssertion{},
+			},
+		},
+	}
+
+	suite := &evals.Suite{Cases: cases}
+	results := suite.Run(context.Background())
+
+	for _, r := range results {
+		if r.Passed {
+			t.Logf("✅ %s (%d turns, %dms)", r.Case.ID, r.TurnCount, r.Duration.Milliseconds())
+		} else {
+			t.Errorf("❌ %s", r.Case.ID)
+			for _, f := range r.Failures {
+				t.Errorf("   %s", f.Error())
+			}
+		}
+	}
+}

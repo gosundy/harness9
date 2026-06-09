@@ -273,12 +273,14 @@ harness9/
 │   │   ├── provider.go              # ScriptedProvider：确定性 LLM mock（按脚本序列返回回复）
 │   │   ├── assertions.go            # Assertion 接口 + Case/Result 类型 + 8 种断言（Hard/Soft）
 │   │   ├── harness.go               # RunCase / Suite / recordingHook / extractFinalOutput
-│   │   ├── testenv.go               # SetupHermeticEnv：清除 API Key，仿 HermesAgent 隔离模式
+│   │   ├── testenv.go               # SetupHermeticEnv：标准 Hermetic 隔离环境（清除 API Key，禁止真实 LLM 调用）
 │   │   ├── report.go                # BuildReport / WriteJSON / WriteMarkdown（评估报告生成）
-│   │   └── dataset/                 # 黄金数据集（go test 可直接运行）
+│   │   └── dataset/                 # 黄金数据集（go test 可直接运行，16 个用例）
 │   │       ├── tool_calling_test.go # 工具调用准确性（4 用例：bash/read_file/write+read/纯对话）
-│   │       ├── planning_test.go     # Planning 完成率（2 用例：todo_write/不调用写文件工具）
-│   │       └── memory_test.go       # Memory 持久化（2 用例：memory_write/memory_search）
+│   │       ├── planning_test.go     # Planning 完成率（4 用例：生成计划/不写文件/先规划后执行/只读探索）
+│   │       ├── memory_test.go       # Memory 持久化（2 用例：memory_write/memory_search）
+│   │       ├── context_test.go      # Context Engineering（3 用例：多步工具链/多轮对话/工具错误观察）
+│   │       └── error_handling_test.go # Error Handling（3 用例：工具失败降级/写入失败停止/MaxTurns 保护）
 │   ├── env/                         # 环境配置
 │   │   ├── env.go                   # 零依赖 .env 文件加载器（系统变量优先）
 │   │   └── env_test.go              # 配置加载单元测试
@@ -469,6 +471,71 @@ func (t *XxxTool) Execute(ctx context.Context, args json.RawMessage) (string, er
 - 功能分支命名：`feature/<描述>`、`fix/<描述>`、`refactor/<描述>`
 - Commit 消息：中文描述，简洁明确，聚焦"为什么"而非"做了什么"
 - 所有代码提交前必须通过 `go test ./...` 和 `gofmt -l .` 检查
+
+### 5.8 Feature 完成后的测试与评估规范
+
+**每完成一个大的 feature 开发后，必须同步补充测试和评估用例，这是 Definition of Done 的一部分。**
+
+#### 单元测试（`*_test.go`）
+
+- 新增的所有导出函数/方法必须有对应单元测试
+- 覆盖正常路径、错误路径和边界条件（如 nil 输入、空切片、超长字符串）
+- 测试文件与实现文件同目录，命名为 `xxx_test.go`
+- 使用标准库 `testing` 包，表驱动优先，不引入第三方断言库
+
+#### Eval 黄金数据集（`internal/evals/dataset/`）
+
+每个涉及 **Agent 行为**的新功能必须在 `dataset/` 下新增或扩充 eval 用例：
+
+| 功能维度 | 对应 dataset 文件 | 核心验证点 |
+|---------|----------------|-----------|
+| Tool Calling | `tool_calling_test.go` | 工具被调用、工具不被调用、多工具顺序调用 |
+| Planning | `planning_test.go` | todo_write 生成计划、Plan Mode 不写文件、先规划后执行 |
+| Memory | `memory_test.go` | memory_write/memory_search 工具调用 |
+| Context Engineering | `context_test.go` | 多轮工具链、工具结果被观察后调整行为 |
+| Error Handling | `error_handling_test.go` | 工具失败后 self-healing、MaxTurns 受控终止 |
+
+**编写用例的强制要求**
+
+```go
+func TestMyFeature(t *testing.T) {
+    evals.SetupHermeticEnv(t)  // 必须首行调用：隔离 API Key，禁止真实 LLM 调用
+
+    c := &evals.Case{
+        ID:       "feature_name/case_name",
+        Category: "feature_name",
+        Prompt:   "...",
+        Provider: evals.NewScriptedProvider(/* 脚本化行为 */),
+        Assertions: []evals.Assertion{
+            // 必须：验证工具调用行为
+            &evals.ToolCalledAssertion{ToolName: "xxx"},
+            // 必须：RunError 断言（正常路径用 NoError，异常路径用 Error）
+            &evals.NoErrorAssertion{},
+            // 可选：效率告警（Soft，不影响通过率）
+            &evals.MaxTurnsAssertion{Max: N},
+        },
+    }
+    // ...
+}
+```
+
+- 每个功能至少覆盖**正向用例**（功能正常工作）和**反向用例**（约束被正确执行）
+- `ScriptedProvider` 脚本序列需要真实反映 Agent 在该场景下的预期行为路径
+- 用例注释必须说明测试意图和验证的核心不变量
+
+#### Eval 通过要求
+
+提交前必须本地验证：
+
+```bash
+# 运行全量 eval（包含黄金数据集）
+go test ./internal/evals/... ./internal/evals/dataset/... -v
+
+# CI 门控（PR 触发时自动运行）
+# 见 .github/workflows/eval.yml —— eval 失败则阻断合并
+```
+
+当前黄金数据集：16 个用例，覆盖 tool_calling（4）/ planning（4）/ memory（2）/ context（3）/ error_handling（3）。新 feature 只能**增加**用例，不能删除或降低覆盖率。
 
 ---
 
