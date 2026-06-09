@@ -22,12 +22,15 @@ import (
 	"go.opentelemetry.io/otel/trace/noop"
 )
 
-// Providers 持有已初始化的 OTEL tracer 和 meter，以及关闭函数。
+// Providers 持有已初始化的 OTEL tracer 和 meter，以及关闭函数和 flush 函数。
 type Providers struct {
 	Tracer trace.Tracer
 	Meter  metric.Meter
 	// Shutdown 关闭所有 OTEL provider，应在进程退出时调用（defer）。
 	Shutdown func(context.Context) error
+	// ForceFlush 立即将 batcher 中的所有待发 span 推送到后端。
+	// 在 interaction 结束时调用，确保 span 不因等待 batcher 定时而延迟上报。
+	ForceFlush func(context.Context) error
 }
 
 // Setup 根据 cfg 初始化 OTEL tracer 和 meter。
@@ -150,7 +153,11 @@ func Setup(ctx context.Context, cfg Config) (*Providers, error) {
 		}
 		return nil
 	}
-	return &Providers{Tracer: tracer, Meter: meter, Shutdown: shutdown}, nil
+	// ForceFlush 直接绑定 SDK TracerProvider（不经过全局 wrapper），确保类型断言成功。
+	forceFlush := func(ctx context.Context) error {
+		return tp.ForceFlush(ctx)
+	}
+	return &Providers{Tracer: tracer, Meter: meter, Shutdown: shutdown, ForceFlush: forceFlush}, nil
 }
 
 // NewNoopProviders 返回零开销的 noop 实现，供测试使用。
@@ -161,8 +168,9 @@ func NewNoopProviders() *Providers {
 // noopProviders 返回零开销的 noop 实现。
 func noopProviders() *Providers {
 	return &Providers{
-		Tracer:   noop.NewTracerProvider().Tracer("harness9"),
-		Meter:    otel.GetMeterProvider().Meter("harness9"),
-		Shutdown: func(_ context.Context) error { return nil },
+		Tracer:     noop.NewTracerProvider().Tracer("harness9"),
+		Meter:      otel.GetMeterProvider().Meter("harness9"),
+		Shutdown:   func(_ context.Context) error { return nil },
+		ForceFlush: func(_ context.Context) error { return nil },
 	}
 }

@@ -7,7 +7,6 @@ import (
 	"log"
 	"time"
 
-	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/trace"
@@ -24,34 +23,27 @@ type interactionSpanKey struct{}
 // turnSpanKey 存储 turn-level Span 的 ctx key。
 type turnSpanKey struct{}
 
-// tracerFlusher 是可选的 flush 接口，sdktrace.TracerProvider 实现了它。
-type tracerFlusher interface {
-	ForceFlush(context.Context) error
-}
-
 // OTELEngineObserver 实现 engine.EngineObserver，
 // 用 OTEL Span 覆盖每次 interaction（顶层父节点）和每个 Turn。
 type OTELEngineObserver struct {
 	tracer     trace.Tracer
 	turnsTotal metric.Int64Counter
-	flusher    tracerFlusher // 非 nil 时，在 OnInteractionEnd 后立即 ForceFlush
+	forceFlush func(context.Context) error // 直接绑定 SDK TracerProvider.ForceFlush
 }
 
 // NewOTELEngineObserver 构造 OTELEngineObserver，初始化 turns 计数器。
-// 会尝试从全局 TracerProvider 中提取 ForceFlush 能力，确保每次 agent 运行结束后
-// 立即将 span 推送到后端，不等待 batcher 的定时 flush（默认 2s）。
+// ForceFlush 直接从 Providers 获取，不经过全局 provider wrapper，确保 100% 可用。
 func NewOTELEngineObserver(p *Providers) (*OTELEngineObserver, error) {
 	turns, err := p.Meter.Int64Counter(MetricTurnsTotal,
 		metric.WithDescription("Total agent turns executed"))
 	if err != nil {
 		return nil, err
 	}
-	obs := &OTELEngineObserver{tracer: p.Tracer, turnsTotal: turns}
-	// 尝试从全局 TracerProvider 获取 ForceFlush 能力（SDK 实现了此接口）。
-	if f, ok := otel.GetTracerProvider().(tracerFlusher); ok {
-		obs.flusher = f
-	}
-	return obs, nil
+	return &OTELEngineObserver{
+		tracer:     p.Tracer,
+		turnsTotal: turns,
+		forceFlush: p.ForceFlush,
+	}, nil
 }
 
 // OnInteractionStart 启动顶层 interaction Span，注入 session.id 和初始 prompt 属性。
@@ -84,10 +76,10 @@ func (o *OTELEngineObserver) OnInteractionEnd(ctx context.Context, turns int, er
 
 	// ForceFlush：立即将当前 batcher 中的所有已结束 span 推送到后端。
 	// 避免 span 因等待 batcher 定时触发（2s）而延迟上报，尤其对短 session 尤为重要。
-	if o.flusher != nil {
+	if o.forceFlush != nil {
 		flushCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		if ferr := o.flusher.ForceFlush(flushCtx); ferr != nil {
+		if ferr := o.forceFlush(flushCtx); ferr != nil {
 			log.Printf("[OTEL] ForceFlush 失败: %v", ferr)
 		}
 	}
