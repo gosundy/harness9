@@ -58,11 +58,11 @@ func NewObservabilityHook(p *Providers) (*ObservabilityHook, error) {
 // BeforeExecute 启动工具执行 Span，写入工具名和参数（langfuse.input），注入开始时间。
 // 始终返回 HookActionAllow，不拦截工具执行。
 func (h *ObservabilityHook) BeforeExecute(ctx context.Context, tc schema.ToolCall) (context.Context, hooks.HookDecision, error) {
-	ctx, _ = h.tracer.Start(ctx, SpanToolExecution,
+	var span trace.Span
+	ctx, span = h.tracer.Start(ctx, SpanToolExecution,
 		trace.WithAttributes(attribute.String(AttrToolName, tc.Name)),
 	)
 	// langfuse.observation.input：工具调用参数 JSON，Langfuse v4 observation 级别 Input 字段。
-	span := trace.SpanFromContext(ctx)
 	if len(tc.Arguments) > 0 {
 		span.SetAttributes(attribute.String(AttrLangfuseObsInput, truncateAttr(string(tc.Arguments))))
 	}

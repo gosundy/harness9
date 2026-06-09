@@ -48,7 +48,6 @@ func NewOTELEngineObserver(p *Providers) (*OTELEngineObserver, error) {
 }
 
 // OnInteractionStart 启动顶层 interaction Span，注入 session.id 和初始 prompt 属性。
-// 诊断日志：确认 observer 被调用
 // 同时通过 trace.ContextWithSpan 将 Span 显式写入 OTEL span slot，
 // 确保后续 tracer.Start 调用能正确获取父 Span。
 func (o *OTELEngineObserver) OnInteractionStart(ctx context.Context, sessionID, prompt string) context.Context {

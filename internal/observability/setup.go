@@ -88,7 +88,7 @@ func Setup(ctx context.Context, cfg Config) (*Providers, error) {
 		if err != nil {
 			return nil, fmt.Errorf("创建 OTLP trace exporter 失败: %w", err)
 		}
-		log.Printf("[OTEL] Trace exporter 初始化成功 → %s（headers: %d 个）", tracesURL, len(cfg.OTLPHeaders))
+		otelLogger.Printf("[OTEL] Trace exporter 初始化成功 → %s（headers: %d 个）", tracesURL, len(cfg.OTLPHeaders))
 
 	default:
 		return noopProviders(), nil
@@ -130,8 +130,9 @@ func Setup(ctx context.Context, cfg Config) (*Providers, error) {
 		}
 		metricExporter, err = otlpmetrichttp.New(ctx, metricOpts...)
 		if err != nil {
-			// metrics 失败不阻断 traces，仅打日志降级
-			log.Printf("[OTEL] Metric exporter 初始化失败（已跳过，不影响 trace）: %v", err)
+			// metrics 失败不阻断 traces，fail-open。
+			// 写 stderr 绕过 TUI 的 log.SetOutput(io.Discard)，保持可见性。
+			otelLogger.Printf("[OTEL] Metric exporter 初始化失败（已跳过，不影响 trace）: %v", err)
 			metricExporter = nil
 		}
 	}

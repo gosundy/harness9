@@ -44,6 +44,8 @@ func RunCase(ctx context.Context, c *Case) Result {
 				RunError: fmt.Errorf("创建临时目录失败: %w", err),
 			}
 		}
+		// 自动清理：eval 结束后删除临时工作目录，防止高频运行时磁盘泄漏。
+		defer os.RemoveAll(workDir)
 	}
 
 	maxTurns := c.MaxTurns

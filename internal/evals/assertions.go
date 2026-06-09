@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 // Failure 描述单次断言失败的详情。
@@ -25,8 +26,7 @@ type Assertion interface {
 	Name() string
 }
 
-// Result 保存单个 Case 的运行结果。完整定义在 harness.go 中；
-// 此处定义使 assertions.go 可以独立编译。Task 9 实现 harness.go 时不再重复定义。
+// Result 保存单个 Case 的运行结果。
 type Result struct {
 	Case              *Case
 	Passed            bool
@@ -39,8 +39,7 @@ type Result struct {
 	Duration          time.Duration
 }
 
-// Case 是评估用例。完整定义在 harness.go 中；
-// 此处定义使 assertions.go 可以独立编译。Task 9 实现 harness.go 时不再重复定义。
+// Case 是评估用例。
 type Case struct {
 	ID         string
 	Category   string
@@ -203,10 +202,15 @@ func (a *MaxToolCallsAssertion) Check(r *Result) *Failure {
 	return nil
 }
 
-// truncate 截断字符串，超出 maxLen 时追加 "..."。
+// truncate 截断字符串，超出 maxLen 字节时追加 "..."。
+// 截断位置对齐合法 UTF-8 字符边界，避免截断多字节字符中间位置。
 func truncate(s string, maxLen int) string {
 	if len(s) <= maxLen {
 		return s
 	}
-	return s[:maxLen] + "..."
+	cut := maxLen
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut] + "..."
 }

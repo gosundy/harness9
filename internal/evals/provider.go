@@ -9,7 +9,6 @@ package evals
 
 import (
 	"context"
-	"fmt"
 	"sync"
 
 	"github.com/harness9/internal/schema"
@@ -115,9 +114,4 @@ func MakeToolCall(id, name, args string) schema.ToolCall {
 		Name:      name,
 		Arguments: []byte(args),
 	}
-}
-
-// MakeBashCall 构造调用 bash 工具的 ToolCall。
-func MakeBashCall(id, command string) schema.ToolCall {
-	return MakeToolCall(id, "bash", fmt.Sprintf(`{"command":%q}`, command))
 }
