@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"os"
 	"strings"
 	"time"
 
@@ -45,9 +46,11 @@ func Setup(ctx context.Context, cfg Config) (*Providers, error) {
 		return noopProviders(), nil
 	}
 
-	// 注册全局 OTEL error handler，使导出失败日志可见（默认 SDK 静默）。
+	// 注册全局 OTEL error handler，直接写 os.Stderr 绕过 TUI 的 log.SetOutput(io.Discard)，
+	// 确保 OTEL 导出失败即使在 TUI 模式下也能被观测到。
+	otelLogger := log.New(os.Stderr, "", log.LstdFlags)
 	otel.SetErrorHandler(otel.ErrorHandlerFunc(func(err error) {
-		log.Printf("[OTEL] 导出错误: %v", err)
+		otelLogger.Printf("[OTEL] 导出错误: %v", err)
 	}))
 
 	res, err := resource.New(ctx,

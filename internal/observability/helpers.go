@@ -2,6 +2,8 @@ package observability
 
 import (
 	"encoding/json"
+	"strings"
+	"unicode/utf8"
 
 	"github.com/harness9/internal/schema"
 )
@@ -10,12 +12,24 @@ import (
 // 超出部分截断并追加 "…（已截断）"。
 const maxSpanAttrLen = 4096
 
-// truncateAttr 截断字符串到 maxSpanAttrLen，超出时追加省略提示。
+// truncateAttr 净化并截断字符串，确保满足 OTEL/protobuf string 字段的两个约束：
+//  1. 必须是合法的 UTF-8（工具输出可能含有 binary 数据）
+//  2. 长度不超过 maxSpanAttrLen 字节
 func truncateAttr(s string) string {
+	// 将非法 UTF-8 字节序列替换为空，满足 OTLP protobuf 序列化要求。
+	// 不替换为占位符是为了避免引入意义不明的乱码。
+	if !utf8.ValidString(s) {
+		s = strings.ToValidUTF8(s, "")
+	}
 	if len(s) <= maxSpanAttrLen {
 		return s
 	}
-	return s[:maxSpanAttrLen] + "…（已截断）"
+	// 截断时必须在合法 UTF-8 边界处截断，避免截到多字节字符的中间位置。
+	cut := maxSpanAttrLen
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut] + "…（已截断）"
 }
 
 // msgView 是 schema.Message 的轻量序列化视图，只保留 Langfuse 展示所需字段。
