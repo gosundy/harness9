@@ -162,7 +162,7 @@ func TestMyFeature(t *testing.T) {
 }
 ```
 
-`SetupHermeticEnv` 在测试开始时清除所有 `_API_KEY`、`_TOKEN`、`_SECRET` 后缀的环境变量，并设置 `HARNESS9_EVAL_HERMETIC=1`。这防止 eval 测试因环境中存在真实 API Key 而意外调用付费服务，也保证本地与 CI 环境完全一致（仿 HermesAgent 的 Hermetic 隔离模式）。
+`SetupHermeticEnv` 在测试开始时清除所有 `_API_KEY`、`_TOKEN`、`_SECRET` 后缀的环境变量，并设置 `HARNESS9_EVAL_HERMETIC=1`。这防止 eval 测试因环境中存在真实 API Key 而意外调用付费服务，也保证本地与 CI 环境完全一致（标准 Hermetic 隔离环境，密封测试，防止 eval 调用真实 API）。
 
 ### 2.6 编写自定义 Eval 用例
 
@@ -243,10 +243,10 @@ harness9.interaction   [session.id="abc123"]
 
 | Span | 关键属性 |
 |------|---------|
-| `harness9.interaction` | `session.id`，总 `agent.turn` 数 |
+| `harness9.interaction` | `session.id`，总 `agent.turn` 数，`langfuse.trace.input`（初始 prompt） |
 | `harness9.turn` | `agent.turn`（轮次编号），`turn.has_tool_calls` |
-| `harness9.llm_request` | `llm.tokens.input`，`llm.tokens.output`，失败时 `error.message` |
-| `harness9.tool` | `tool.name`，`tool.success`，失败时 `error.message` |
+| `harness9.llm_request` | `gen_ai.request.model`，`gen_ai.usage.input_tokens`，`gen_ai.usage.output_tokens`，`langfuse.observation.input`（消息列表），`langfuse.observation.output`（LLM 回复） |
+| `harness9.tool` | `tool.name`，`tool.success`，`langfuse.observation.input`（工具参数），`langfuse.observation.output`（执行结果） |
 
 ### 3.2 三组件实现原理
 
@@ -527,13 +527,17 @@ harness9 的 Span 在 Langfuse 中展示为：
 Trace: harness9.interaction
 │   session.id = "abc123..."
 │   agent.turn = 3
+│   Input = "用户初始 prompt"      ← langfuse.trace.input
 │
-└── Span: harness9.turn  (turn=1)
-    ├── Span: harness9.llm_request
-    │       llm.tokens.input = 4821
-    │       llm.tokens.output = 312
-    ├── Span: harness9.tool  (tool.name="bash", tool.success=true)
-    └── Span: harness9.tool  (tool.name="read_file", tool.success=true)
+└── Observation: harness9.turn  (turn=1)
+    ├── Generation: harness9.llm_request
+    │       Input  = [{"role":"system",...},{"role":"user",...}]   ← langfuse.observation.input
+    │       Output = "LLM 回复文本"                                 ← langfuse.observation.output
+    │       25,269 prompt → 1,027 completion (Σ 26,296)
+    │       anthropic/claude-sonnet-4.6
+    └── Span: harness9.tool  (tool.name="bash")
+            Input  = {"command":"ls -la"}                          ← langfuse.observation.input
+            Output = "total 24\n-rw-r--r-- ..."                   ← langfuse.observation.output
 ```
 
 Langfuse 会自动将 Token 数换算为费用估算（在 **Analytics → Model Usage** 中查看）。
@@ -561,6 +565,8 @@ OTEL_EXPORTER_OTLP_HEADERS=Authorization=Basic <你的 BASE64 AUTH>,x-langfuse-i
 | Trace 出现但有延迟 | 缺少 `x-langfuse-ingestion-version=4` | 检查 `OTEL_EXPORTER_OTLP_HEADERS` 中是否包含此 header |
 | `connection refused` | endpoint 区域选错 | 确认你的账号注册区域（EU/US/JP），使用对应 endpoint |
 | harness9 启动后报 TLS 错误 | 旧版 endpoint 使用了 http:// | 改为 https:// 前缀 |
+| `Input/Output` 字段显示 null | 使用了旧版 `langfuse.input/output` 属性名 | 已修复（v4 ingestion 使用 `langfuse.trace.*` / `langfuse.observation.*`） |
+| 工具输出含 binary 数据导致无数据 | 工具结果含非 UTF-8 字节，OTLP 序列化失败 | 已修复（`truncateAttr` 自动净化非法 UTF-8）|
 
 ---
 
@@ -624,6 +630,7 @@ harness9
 | `internal/observability/observer.go` | `observability` | `OTELEngineObserver`（Interaction/Turn Span） |
 | `internal/observability/provider.go` | `observability` | `TracingProvider`（LLM Request Span） |
 | `internal/observability/hook.go` | `observability` | `ObservabilityHook`（Tool Execution Span） |
+| `internal/observability/helpers.go` | `observability` | JSON 序列化辅助（`serializeMessages` / `serializeOutput` / `truncateAttr` UTF-8 净化）|
 | `internal/evals/provider.go` | `evals` | `ScriptedProvider`（确定性 mock） |
 | `internal/evals/assertions.go` | `evals` | `Assertion` 接口 + 8 种断言 + `Case`/`Result` 类型 |
 | `internal/evals/harness.go` | `evals` | `RunCase` / `Suite` / `recordingHook` |

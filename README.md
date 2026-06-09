@@ -274,6 +274,8 @@ harness9
 - **默认零开销**：`OTEL_ENABLED` 不设置时使用 noop 实现，无任何性能影响
 - **6 个关键 Metrics**：LLM 请求延迟、Token 消耗（Input/Output）、工具调用次数（by name + status）、工具执行耗时、Agent Turn 总数
 - **三种 Exporter**：`noop`（默认）/ `stdout`（本地调试）/ `otlp`（生产接入 Langfuse、Grafana、Jaeger）
+- **完整 Input/Output 上报**：每次 LLM 调用完整的消息列表和回复内容都记录到 Langfuse，工具调用的参数和结果也完整可追溯
+- **自动 UTF-8 净化**：工具输出中的 binary 数据自动清理，不因非法字节导致 trace 丢失
 
 详见 [Test·Eval·Observability 技术方案](docs/核心功能/observability.md)。
 
