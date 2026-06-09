@@ -1,3 +1,15 @@
+// assertions.go — 定义 harness9 评估框架的核心数据类型和内置断言集合。
+//
+// 断言分为两类：
+//   - Hard（硬断言）：失败时 Case.Passed=false，如工具是否被调用、输出是否包含期望字符串
+//   - Soft（软断言）：失败时仅追加到 Warnings，不影响 Passed，如 MaxTurnsAssertion
+//
+// 所有内置断言均实现 Assertion 接口，可组合使用：
+//
+//	c.Assertions = []evals.Assertion{
+//	    &ToolCalledAssertion{ToolName: "bash"},
+//	    &MaxTurnsAssertion{Max: 5},
+//	}
 package evals
 
 import (
@@ -8,10 +20,11 @@ import (
 )
 
 // Failure 描述单次断言失败的详情。
+// 实现 error 接口，使 Failures 列表可直接用于 t.Errorf("%v", f)。
 type Failure struct {
-	AssertionName string
-	Message       string
-	// IsSoft=true 表示仅警告，不导致 Case 失败（效率断言）。
+	AssertionName string // 断言的 Name() 返回值，用于定位失败所在
+	Message       string // 人类可读的失败原因描述
+	// IsSoft=true 表示仅记录为警告（Warnings），不导致 Case.Passed=false（效率类断言）。
 	IsSoft bool
 }
 
@@ -20,34 +33,36 @@ func (f *Failure) Error() string {
 }
 
 // Assertion 是评估断言的基接口。
-// Check 返回 nil 表示通过，返回 *Failure 表示失败。
+// Check 返回 nil 表示通过，返回 *Failure 表示失败（软/硬由 IsSoft 决定）。
 type Assertion interface {
 	Check(result *Result) *Failure
+	// Name 返回断言的唯一标识名称，用于失败报告和日志。格式惯例：action(arg)，如 tool_called(bash)。
 	Name() string
 }
 
-// Result 保存单个 Case 的运行结果。
+// Result 保存单个 Case 的完整运行结果。
+// 由 RunCase 填充，传入所有 Assertion.Check 调用。
 type Result struct {
-	Case              *Case
-	Passed            bool
-	TurnCount         int
-	ToolCallsExecuted []string
-	FinalOutput       string
-	RunError          error
-	Failures          []*Failure
-	Warnings          []*Failure
-	Duration          time.Duration
+	Case              *Case         // 对应的评估用例
+	Passed            bool          // 是否所有硬断言均通过
+	TurnCount         int           // 实际执行的 Turn 数（来自 ScriptedProvider.TurnIndex）
+	ToolCallsExecuted []string      // 被调用工具名称列表（由 recordingHook 记录，按调用顺序）
+	FinalOutput       string        // Agent 的最终文本输出（由 extractFinalOutput 提取）
+	RunError          error         // engine.Run 返回的错误（MaxTurns/Context Cancel 均会体现为此字段）
+	Failures          []*Failure    // 硬断言失败列表（非 nil 时 Passed=false）
+	Warnings          []*Failure    // 软断言警告列表（不影响 Passed）
+	Duration          time.Duration // 整个 Case 的执行耗时
 }
 
-// Case 是评估用例。
+// Case 是单个评估用例，包含触发 prompt、确定性 Provider 和验证断言。
 type Case struct {
-	ID         string
-	Category   string
-	Prompt     string
-	Provider   *ScriptedProvider
-	Assertions []Assertion
-	MaxTurns   int
-	WorkDir    string
+	ID         string            // 用例唯一标识（推荐格式：category/name，如 tool_calling/bash_basic）
+	Category   string            // 用例类别，用于分类统计（如 "tool_calling"、"planning"）
+	Prompt     string            // 发给 Agent 的用户 prompt
+	Provider   *ScriptedProvider // 确定性 LLM 响应序列（不调用真实 API）
+	Assertions []Assertion       // 运行后校验的断言列表
+	MaxTurns   int               // 引擎最大 Turn 数（0 时默认 50）
+	WorkDir    string            // 工具执行的工作目录（空则自动创建临时目录并在结束后清理）
 }
 
 // ToolCalledAssertion 断言指定工具被调用了至少 MinTimes 次（Hard）。

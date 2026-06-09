@@ -1,3 +1,14 @@
+// provider.go — TracingProvider 包装 LLMProvider，
+// 为每次 LLM 调用（Generate/GenerateStream）创建 SpanLLMRequest Span，
+// 并写入 Langfuse 展示所需的 input/output/token/model 属性。
+//
+// 继承关系（ctx 传播）：
+//
+//	OTELEngineObserver.OnTurnStart → turnCtx（含 turn span）
+//	  → emitter.generate(turnCtx, ...) → TracingProvider.Generate(turnCtx, ...)
+//	    → tracer.Start(turnCtx, SpanLLMRequest)  ← 自动以 turn span 为父节点
+//
+// TracingProvider 对引擎层完全透明：实现 LLMProvider 接口，可无缝替换。
 package observability
 
 import (

@@ -1,5 +1,11 @@
-// Package observability — OTELEngineObserver 实现 engine.EngineObserver，
-// 为每次 interaction 和每个 Turn 创建 OTEL Span。
+// observer.go — OTELEngineObserver 实现 engine.EngineObserver，
+// 为每次 interaction 和每个 Turn 创建 OTEL Span，形成三层嵌套的 Span 树：
+//
+//	interaction (顶层) → turn (每轮) → llm_request / tool (每次 LLM 调用或工具执行)
+//
+// 关键设计：所有 Span 通过 trace.ContextWithSpan 双写（OTEL 标准 slot + 自定义 key），
+// 确保在中间层代码（compaction、session 加载等）可能替换 ctx 的情况下，
+// 父子关系链路不会断开，Langfuse 能正确分组显示。
 package observability
 
 import (

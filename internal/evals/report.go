@@ -1,3 +1,11 @@
+// report.go — 评估报告生成器，提供 JSON 和 Markdown 两种输出格式。
+//
+// 典型用法（在 CI 中生成报告）：
+//
+//	results := suite.Run(ctx)
+//	report := evals.BuildReport(results)
+//	evals.WriteJSON(report, "eval-results/report.json")
+//	evals.WriteMarkdown(report, "eval-results/report.md")
 package evals
 
 import (
@@ -10,37 +18,41 @@ import (
 	"time"
 )
 
-// SuiteReport 是一次 Suite 运行的聚合报告。
+// SuiteReport 是一次 Suite 运行的聚合报告，包含全局统计和按类别分解的结果。
+// 可序列化为 JSON 供 CI 机器解析，也可渲染为 Markdown 供人工阅读。
 type SuiteReport struct {
-	RunAt      time.Time                 `json:"run_at"`
-	TotalCases int                       `json:"total_cases"`
-	Passed     int                       `json:"passed"`
-	Failed     int                       `json:"failed"`
-	PassRate   float64                   `json:"pass_rate"`
-	Categories map[string]*CategoryStats `json:"categories"`
-	Results    []ResultSnapshot          `json:"results"`
+	RunAt      time.Time                 `json:"run_at"`      // 报告生成时间（UTC）
+	TotalCases int                       `json:"total_cases"` // 总用例数
+	Passed     int                       `json:"passed"`      // 通过用例数
+	Failed     int                       `json:"failed"`      // 失败用例数
+	PassRate   float64                   `json:"pass_rate"`   // 通过率（0.0~1.0）
+	Categories map[string]*CategoryStats `json:"categories"`  // 按 Category 分类的统计
+	Results    []ResultSnapshot          `json:"results"`     // 每个 Case 的详细快照
 }
 
-// CategoryStats 是单个类别的统计信息。
+// CategoryStats 是单个 Category 的统计信息。
+// 对应 SuiteReport.Categories 的 map 值。
 type CategoryStats struct {
-	Total    int     `json:"total"`
-	Passed   int     `json:"passed"`
-	PassRate float64 `json:"pass_rate"`
+	Total    int     `json:"total"`     // 该类别总用例数
+	Passed   int     `json:"passed"`    // 通过用例数
+	PassRate float64 `json:"pass_rate"` // 通过率（0.0~1.0）
 }
 
-// ResultSnapshot 是单个 Case 结果的 JSON 序列化视图。
+// ResultSnapshot 是单个 Case 结果的轻量序列化视图（不包含 Case.Provider 等大对象）。
+// 用于 JSON 持久化和 Markdown 渲染。
 type ResultSnapshot struct {
-	ID         string   `json:"id"`
-	Category   string   `json:"category"`
-	Passed     bool     `json:"passed"`
-	TurnCount  int      `json:"turn_count"`
-	ToolCalls  []string `json:"tool_calls"`
-	Failures   []string `json:"failures,omitempty"`
-	Warnings   []string `json:"warnings,omitempty"`
-	DurationMs int64    `json:"duration_ms"`
+	ID         string   `json:"id"`                 // Case.ID
+	Category   string   `json:"category"`           // Case.Category
+	Passed     bool     `json:"passed"`             // 是否通过所有硬断言
+	TurnCount  int      `json:"turn_count"`         // 实际执行的 Turn 数
+	ToolCalls  []string `json:"tool_calls"`         // 被调用工具名称列表
+	Failures   []string `json:"failures,omitempty"` // 硬断言失败消息列表
+	Warnings   []string `json:"warnings,omitempty"` // 软断言警告消息列表
+	DurationMs int64    `json:"duration_ms"`        // 执行耗时（毫秒）
 }
 
-// BuildReport 从 Results 列表生成 SuiteReport。
+// BuildReport 从 Results 列表聚合生成 SuiteReport。
+// 自动计算全局和分类通过率，将 Failure/Warning 序列化为字符串列表。
 func BuildReport(results []Result) SuiteReport {
 	report := SuiteReport{
 		RunAt:      time.Now(),
@@ -92,7 +104,8 @@ func BuildReport(results []Result) SuiteReport {
 	return report
 }
 
-// WriteJSON 将报告序列化为 JSON，写入 path（自动创建目录）。
+// WriteJSON 将报告序列化为 JSON，写入 path。
+// 自动创建父目录（权限 0755），使用 MarshalIndent 保证可读性。
 func WriteJSON(report SuiteReport, path string) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
 		return err
@@ -104,7 +117,9 @@ func WriteJSON(report SuiteReport, path string) error {
 	return os.WriteFile(path, data, 0644)
 }
 
-// WriteMarkdown 将报告渲染为 Markdown，写入 path（自动创建目录）。
+// WriteMarkdown 将报告渲染为 Markdown，写入 path。
+// 包含：总计行、按类别统计表格、每个 Case 的详细结果（含失败消息和效率警告）。
+// 分类统计按名称字母序排列，确保输出稳定可 diff。
 func WriteMarkdown(report SuiteReport, path string) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
 		return err
