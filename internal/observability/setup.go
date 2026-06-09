@@ -3,6 +3,8 @@ package observability
 import (
 	"context"
 	"fmt"
+	"log"
+	"strings"
 	"time"
 
 	"go.opentelemetry.io/otel"
@@ -30,10 +32,20 @@ type Providers struct {
 
 // Setup 根据 cfg 初始化 OTEL tracer 和 meter。
 // 若 cfg.Enabled=false 或 cfg.Exporter=noop，返回零开销的 noop 实现。
+// 对 OTLP exporter：
+//   - endpoint 和 headers 均由 cfg 显式传入（不依赖 SDK 的 env var 读取），保证可靠性
+//   - traces 发往 cfg.OTLPEndpoint/v1/traces，metrics 发往 cfg.OTLPEndpoint/v1/metrics
+//   - URL scheme 决定 TLS（https:// → 加密，http:// → 不加密）
+//   - 导出失败通过全局 OTEL error handler 打印到日志，不静默丢弃
 func Setup(ctx context.Context, cfg Config) (*Providers, error) {
 	if !cfg.Enabled || cfg.Exporter == ExporterNoop {
 		return noopProviders(), nil
 	}
+
+	// 注册全局 OTEL error handler，使导出失败日志可见（默认 SDK 静默）。
+	otel.SetErrorHandler(otel.ErrorHandlerFunc(func(err error) {
+		log.Printf("[OTEL] 导出错误: %v", err)
+	}))
 
 	res, err := resource.New(ctx,
 		resource.WithAttributes(semconv.ServiceName(cfg.ServiceName)),
@@ -42,28 +54,44 @@ func Setup(ctx context.Context, cfg Config) (*Providers, error) {
 		return nil, fmt.Errorf("创建 otel resource 失败: %w", err)
 	}
 
-	// OTEL SDK 自动从 OTEL_EXPORTER_OTLP_ENDPOINT 读取 endpoint 并追加信号路径
-	// （/v1/traces、/v1/metrics），从 OTEL_EXPORTER_OTLP_HEADERS 读取认证 header，
-	// 从 URL scheme 判断 TLS（https:// → 加密，http:// → 不加密）。
-	// 不使用 WithEndpointURL，避免覆盖 SDK 的路径追加行为导致 Langfuse 等平台返回 404。
+	// ---- Trace Exporter ----
 	var spanExporter sdktrace.SpanExporter
 	switch cfg.Exporter {
 	case ExporterStdout:
 		spanExporter, err = stdouttrace.New(stdouttrace.WithPrettyPrint())
+		if err != nil {
+			return nil, fmt.Errorf("创建 stdout trace exporter 失败: %w", err)
+		}
+
 	case ExporterOTLP:
 		if cfg.OTLPEndpoint == "" {
-			return nil, fmt.Errorf("OTEL_EXPORTER_OTLP_ENDPOINT 未设置")
+			return nil, fmt.Errorf("OTEL_EXPORTER_OTLP_ENDPOINT 未设置，OTLP 模式下必填")
 		}
-		spanExporter, err = otlptracehttp.New(ctx)
+		// 显式拼接 /v1/traces，不依赖 SDK 自动追加（SDK 版本间行为存在差异）。
+		tracesURL := strings.TrimSuffix(cfg.OTLPEndpoint, "/") + "/v1/traces"
+		traceOpts := []otlptracehttp.Option{
+			otlptracehttp.WithEndpointURL(tracesURL),
+		}
+		if strings.HasPrefix(tracesURL, "http://") {
+			traceOpts = append(traceOpts, otlptracehttp.WithInsecure())
+		}
+		if len(cfg.OTLPHeaders) > 0 {
+			traceOpts = append(traceOpts, otlptracehttp.WithHeaders(cfg.OTLPHeaders))
+		}
+		spanExporter, err = otlptracehttp.New(ctx, traceOpts...)
+		if err != nil {
+			return nil, fmt.Errorf("创建 OTLP trace exporter 失败: %w", err)
+		}
+		log.Printf("[OTEL] Trace exporter 初始化成功 → %s（headers: %d 个）", tracesURL, len(cfg.OTLPHeaders))
+
 	default:
 		return noopProviders(), nil
 	}
-	if err != nil {
-		return nil, fmt.Errorf("创建 trace exporter 失败: %w", err)
-	}
 
 	tp := sdktrace.NewTracerProvider(
-		sdktrace.WithBatcher(spanExporter),
+		sdktrace.WithBatcher(spanExporter,
+			sdktrace.WithBatchTimeout(2*time.Second), // 默认 5s，缩短为 2s 加快首次上报
+		),
 		sdktrace.WithResource(res),
 	)
 	otel.SetTracerProvider(tp)
@@ -72,31 +100,54 @@ func Setup(ctx context.Context, cfg Config) (*Providers, error) {
 		propagation.Baggage{},
 	))
 
+	// ---- Metric Exporter ----
 	var metricExporter sdkmetric.Exporter
 	switch cfg.Exporter {
 	case ExporterStdout:
 		metricExporter, err = stdoutmetric.New()
+		if err != nil {
+			_ = tp.Shutdown(ctx)
+			return nil, fmt.Errorf("创建 stdout metric exporter 失败: %w", err)
+		}
 	case ExporterOTLP:
-		metricExporter, err = otlpmetrichttp.New(ctx)
-	}
-	if err != nil {
-		_ = tp.Shutdown(ctx) // 清理已创建的 tracer provider
-		return nil, fmt.Errorf("创建 metric exporter 失败: %w", err)
+		// Langfuse 目前只支持 traces，metrics 端点可能返回 404。
+		// 创建 metrics exporter 但允许导出失败（fail-open），不影响 trace 上报。
+		metricsURL := strings.TrimSuffix(cfg.OTLPEndpoint, "/") + "/v1/metrics"
+		metricOpts := []otlpmetrichttp.Option{
+			otlpmetrichttp.WithEndpointURL(metricsURL),
+		}
+		if strings.HasPrefix(metricsURL, "http://") {
+			metricOpts = append(metricOpts, otlpmetrichttp.WithInsecure())
+		}
+		if len(cfg.OTLPHeaders) > 0 {
+			metricOpts = append(metricOpts, otlpmetrichttp.WithHeaders(cfg.OTLPHeaders))
+		}
+		metricExporter, err = otlpmetrichttp.New(ctx, metricOpts...)
+		if err != nil {
+			// metrics 失败不阻断 traces，仅打日志降级
+			log.Printf("[OTEL] Metric exporter 初始化失败（已跳过，不影响 trace）: %v", err)
+			metricExporter = nil
+		}
 	}
 
-	mp := sdkmetric.NewMeterProvider(
-		sdkmetric.WithReader(sdkmetric.NewPeriodicReader(metricExporter,
-			sdkmetric.WithInterval(15*time.Second))),
-		sdkmetric.WithResource(res),
-	)
-	otel.SetMeterProvider(mp)
+	var mp *sdkmetric.MeterProvider
+	if metricExporter != nil {
+		mp = sdkmetric.NewMeterProvider(
+			sdkmetric.WithReader(sdkmetric.NewPeriodicReader(metricExporter,
+				sdkmetric.WithInterval(30*time.Second))),
+			sdkmetric.WithResource(res),
+		)
+		otel.SetMeterProvider(mp)
+	}
 
 	tracer := otel.Tracer(cfg.ServiceName)
 	meter := otel.Meter(cfg.ServiceName)
 
 	shutdown := func(ctx context.Context) error {
 		_ = tp.Shutdown(ctx)
-		_ = mp.Shutdown(ctx)
+		if mp != nil {
+			_ = mp.Shutdown(ctx)
+		}
 		return nil
 	}
 	return &Providers{Tracer: tracer, Meter: meter, Shutdown: shutdown}, nil
