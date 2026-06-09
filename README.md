@@ -277,7 +277,7 @@ harness9
 - **完整 Input/Output 上报**：每次 LLM 调用完整的消息列表和回复内容都记录到 Langfuse，工具调用的参数和结果也完整可追溯
 - **自动 UTF-8 净化**：工具输出中的 binary 数据自动清理，不因非法字节导致 trace 丢失
 
-详见 [Test·Eval·Observability 技术方案](docs/核心功能/observability.md)。
+详见 [测试·评估·可观测体系](docs/核心功能/eval.md)。
 
 ### Test & Eval（自动化测试与评估）
 
@@ -304,7 +304,7 @@ result := evals.RunCase(context.Background(), c)
 ```
 
 ```bash
-# 运行黄金数据集（8 个内置用例，无需 API Key）
+# 运行黄金数据集（16 个内置用例，无需 API Key）
 go test ./internal/evals/dataset/... -v
 ```
 
@@ -312,9 +312,9 @@ go test ./internal/evals/dataset/... -v
 - **行为轨迹验证**：`recordingHook` 记录所有工具调用，Hard/Soft 双层断言覆盖正确性与效率
 - **Hermetic CI 隔离**：`SetupHermeticEnv` 清除所有 API Key，防止 eval 意外调用付费服务
 - **CI Quality Gate**：PR 触发自动评估（`.github/workflows/eval.yml`），eval 失败则阻断合并
-- **黄金数据集**：内置 8 个用例（工具调用准确性 × 4、Planning 完成率 × 2、Memory 持久化 × 2）
+- **黄金数据集**：内置 16 个用例（工具调用准确性 × 4、Planning 完成率 × 4、Context Engineering × 3、Error Handling/Self-Healing × 3、Memory 持久化 × 2）
 
-详见 [Test·Eval·Observability 技术方案](docs/核心功能/observability.md)。
+详见 [测试·评估·可观测体系](docs/核心功能/eval.md)。
 
 ### Sandbox（Docker 容器级隔离）
 
@@ -401,7 +401,7 @@ for evt := range stream {
 | **Tools**      | 工具注册表 + 内置工具（bash / read_file（offset/limit 分页）/ write_file / edit_file / todo_write / memory_write / memory_search）                 | ✅   |
 | **Sandbox**    | Docker 容器级隔离：OS 级进程沙箱（cap-drop/no-new-privileges）、Agent 级独立容器、bind mount 工具透明路由、TUI SandboxBar、孤儿容器回收；默认开启；`SANDBOX_ENABLED=false` 关闭 | ✅   |
 | **Observability** | OpenTelemetry 链路追踪：`OTELEngineObserver`（Interaction/Turn Span）+ `TracingProvider`（LLM Span + Token Metrics）+ `ObservabilityHook`（Tool Span）；默认 noop 零开销；支持接入 Langfuse / Grafana / Jaeger | ✅   |
-| **Evals**      | 自动化评估框架：`ScriptedProvider`（确定性 mock）+ `Assertion`（Hard/Soft 断言）+ `EvalHarness`（RunCase/Suite）+ `SetupHermeticEnv` + `BuildReport`（JSON/Markdown）；8 个黄金数据集用例；CI Quality Gate | ✅   |
+| **Evals**      | 自动化评估框架：`ScriptedProvider`（确定性 mock）+ `Assertion`（Hard/Soft 断言）+ `EvalHarness`（RunCase/Suite）+ `SetupHermeticEnv` + `BuildReport`（JSON/Markdown）；16 个黄金数据集用例；CI Quality Gate | ✅   |
 | **Env**        | 零依赖 `.env` 配置加载器                                                                        | ✅   |
 
 
@@ -460,7 +460,7 @@ harness9/
 | [Shell 执行功能技术方案](docs/核心功能/shell-execution.md)                   | `!` 前缀触发、异步执行机制、LLM 上下文注入、截断策略、交互式命令拦截          |
 | [Human-in-the-Loop 权限控制](docs/核心功能/human-in-the-loop.md)           | HookDecision、DangerHook、PermissionHook、审批对话框、白名单配置、敏感路径保护  |
 | [Sandbox 沙箱系统](docs/核心功能/sandbox.md)                               | Docker 容器级隔离、Environment 接口、五状态生命周期、安全加固参数、TUI SandboxBar、孤儿回收 |
-| [Test·Eval·Observability](docs/核心功能/observability.md)                 | 三层可观测体系设计、OTEL Span 层次结构与实现原理、eval 确定性框架、CI Quality Gate |
+| [测试·评估·可观测体系](docs/核心功能/eval.md)                 | Test/Eval/Observability 完整体系：ScriptedProvider、黄金数据集（16 用例）、CI Quality Gate、OTEL 链路追踪、Langfuse 接入指南 |
 | [AGENTS.md](AGENTS.md)                                       | 项目开发规范、编码标准、架构决策                                        |
 
 
