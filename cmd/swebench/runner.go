@@ -88,6 +88,9 @@ func runInstance(ctx context.Context, inst Instance, cfg Config) RunResult {
 	if os.Getenv("SANDBOX_IMAGE") == "" {
 		sandboxCfg.Image = "python:3.11-slim"
 	}
+	// macOS Docker Desktop 用 VirtioFS 处理 bind mount，大型 git repo 的 volume
+	// 注册比 Linux 慢，30s（默认值）容易触发超时；扩大到 90s 留足缓冲。
+	sandboxCfg.StartTimeout = 90 * time.Second
 	mgr := sandbox.NewManager(sandboxCfg)
 	sandboxCtx, sandboxCancel := context.WithTimeout(ctx, 60*time.Second)
 	defer sandboxCancel()

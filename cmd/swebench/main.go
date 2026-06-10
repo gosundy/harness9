@@ -28,6 +28,7 @@ import (
 	"golang.org/x/sync/semaphore"
 
 	"github.com/harness9/internal/env"
+	"github.com/harness9/internal/sandbox"
 )
 
 func main() {
@@ -63,6 +64,18 @@ func main() {
 	if err := preflight(cfg); err != nil {
 		fmt.Fprintf(os.Stderr, "启动检查失败: %v\n", err)
 		os.Exit(1)
+	}
+
+	// 清理上次崩溃遗留的孤儿容器（包括 Running 状态）
+	// 孤儿容器持有已删除 tmpDir 的 bind mount，在 macOS Docker Desktop 上
+	// 会导致 VirtioFS 混乱，使新容器启动超时。
+	{
+		reapCtx, reapCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		mgr := sandbox.NewManager(sandbox.DefaultConfig())
+		if err := mgr.ReapOrphans(reapCtx); err != nil {
+			fmt.Fprintf(os.Stderr, "警告: 清理孤儿容器失败: %v\n", err)
+		}
+		reapCancel()
 	}
 
 	// 加载数据集
