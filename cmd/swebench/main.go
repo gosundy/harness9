@@ -5,9 +5,10 @@
 //
 //	go run ./cmd/swebench --dataset swe-bench-lite.jsonl --sample 10 --output ./results
 //
-// 环境变量:
+// 环境变量（可通过 .env 文件或系统环境变量提供）：
 //
-//	OPENAI_API_KEY   LLM API Key（必填）
+//	OPENAI_API_KEY   LLM Provider API Key（必填）
+//	OPENAI_BASE_URL  自定义 OpenAI 兼容 API 地址（可选，用于 OpenRouter / Azure 等）
 //	LLM_MODEL        模型名称（默认: openai/gpt-4o-mini）
 //	SANDBOX_IMAGE    Docker 镜像（推荐: python:3.11-slim，默认: ubuntu:22.04）
 package main
@@ -30,8 +31,16 @@ import (
 )
 
 func main() {
-	// 加载 .env 文件（系统环境变量优先）
-	_ = env.Load(".env")
+	// 从当前工作目录加载 .env 文件（系统环境变量优先，与 cmd/harness9 保持一致）
+	cwd, err := os.Getwd()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "获取工作目录失败: %v\n", err)
+		os.Exit(1)
+	}
+	if err := env.Load(filepath.Join(cwd, ".env")); err != nil {
+		fmt.Fprintf(os.Stderr, "加载环境配置失败: %v\n", err)
+		os.Exit(1)
+	}
 
 	cfg := Config{}
 	flag.StringVar(&cfg.DatasetPath, "dataset", "", "SWE-bench Lite JSONL 文件路径（必填）")

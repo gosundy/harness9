@@ -256,15 +256,27 @@ writeSummary(...)
 
 ### 4.1 前置条件
 
-```bash
-# 必须
-export OPENAI_API_KEY=sk-...     # LLM API Key
-# Docker 守护进程运行中
-docker info
+**推荐方式**：在项目根目录创建 `.env` 文件（与 harness9 主程序共用同一套配置，runner 启动时自动从当前工作目录加载）：
 
-# 可选（推荐设置，Python 3.11 环境更适合 SWE-bench 仓库）
-export SANDBOX_IMAGE=python:3.11-slim
-export LLM_MODEL=openai/gpt-4o   # 推荐模型，更强的代码能力
+```bash
+# harness9/.env
+OPENAI_API_KEY=sk-...
+OPENAI_BASE_URL=https://openrouter.ai/api/v1   # 可选，接入 OpenRouter / Azure 等
+LLM_MODEL=openai/gpt-4o
+SANDBOX_IMAGE=python:3.11-slim                  # 推荐，Python 3.11 更适合 SWE-bench
+```
+
+**也可通过系统环境变量提供**（系统变量优先于 `.env`）：
+
+```bash
+export OPENAI_API_KEY=sk-...
+export LLM_MODEL=openai/gpt-4o
+```
+
+确认 Docker 守护进程运行中：
+
+```bash
+docker info
 ```
 
 ### 4.2 下载数据集
@@ -285,12 +297,11 @@ print(f'下载完成: {len(ds)} 条 instances')
 
 ### 4.3 按类别抽样运行（推荐初次运行）
 
+配置好 `.env` 后直接运行（runner 从当前目录自动加载）：
+
 ```bash
 cd /path/to/harness9
 
-SANDBOX_IMAGE=python:3.11-slim \
-OPENAI_API_KEY=your_key \
-LLM_MODEL=openai/gpt-4o \
 go run ./cmd/swebench \
   --dataset swe-bench-lite.jsonl \
   --sample 10 \           # 每个 repo 取 10 条，约 110 条总量
@@ -298,6 +309,13 @@ go run ./cmd/swebench \
   --max-turns 30 \        # 每个 instance 最多 30 轮 LLM 调用
   --parallel 2 \          # 同时运行 2 个 instance
   --timeout 15            # 每个 instance 超时 15 分钟
+```
+
+如果没有 `.env` 文件，也可直接通过环境变量传入：
+
+```bash
+OPENAI_API_KEY=sk-... LLM_MODEL=openai/gpt-4o go run ./cmd/swebench \
+  --dataset swe-bench-lite.jsonl --sample 10
 ```
 
 运行期间，stderr 输出进度：
@@ -418,11 +436,12 @@ go run ./cmd/swebench --help
 | `--timeout` | int | 10 | 单个 instance 超时（分钟）|
 | `--model` | string | `""` | LLM 模型（空则读 `LLM_MODEL` 环境变量）|
 
-**环境变量**：
+**环境变量**（可通过 `.env` 文件或系统环境变量提供，系统变量优先）：
 
 | 变量 | 说明 | 推荐值 |
 |------|------|--------|
 | `OPENAI_API_KEY` | LLM API Key（必填）| — |
+| `OPENAI_BASE_URL` | 自定义 API 地址（可选）| `https://openrouter.ai/api/v1` |
 | `LLM_MODEL` | 模型名称 | `openai/gpt-4o` |
 | `SANDBOX_IMAGE` | Docker 镜像 | `python:3.11-slim` |
 | `SANDBOX_ENABLED` | 启用 Docker 隔离 | `true`（默认）|
