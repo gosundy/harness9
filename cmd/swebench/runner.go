@@ -32,16 +32,22 @@ type Config struct {
 	Model       string
 }
 
-// newProvider 根据模型名创建 LLM provider。
-// 优先级：cfg.Model > LLM_MODEL 环境变量 > 默认值 openai/gpt-4o-mini。
-func newProvider(model string) (provider.LLMProvider, error) {
+// resolveModelName 解析最终使用的模型名：cfg.Model > LLM_MODEL 环境变量 > 默认值。
+// 与 newProvider 保持相同的优先级逻辑，用于填写 predictions.jsonl 的 model_name_or_path。
+func resolveModelName(model string) string {
 	if model == "" {
 		model = os.Getenv("LLM_MODEL")
 	}
 	if model == "" {
 		model = "openai/gpt-4o-mini"
 	}
-	return provider.NewOpenAIProvider(model)
+	return model
+}
+
+// newProvider 根据模型名创建 LLM provider。
+// 优先级：cfg.Model > LLM_MODEL 环境变量 > 默认值 openai/gpt-4o-mini。
+func newProvider(model string) (provider.LLMProvider, error) {
+	return provider.NewOpenAIProvider(resolveModelName(model))
 }
 
 // runInstance 对单个 SWE-bench instance 执行完整的 clone → sandbox → engine → patch 流程。

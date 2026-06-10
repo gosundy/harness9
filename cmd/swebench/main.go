@@ -73,6 +73,10 @@ func main() {
 	}
 	fmt.Fprintf(os.Stderr, "数据集加载完成: %d 条 instances\n", len(allInstances))
 
+	// 解析实际使用的模型名（用于填写 predictions.jsonl 的 model_name_or_path 字段）
+	modelName := resolveModelName(cfg.Model)
+	fmt.Fprintf(os.Stderr, "使用模型: %s\n", modelName)
+
 	// 按 repo 采样
 	instances := sampleByRepo(allInstances, cfg.SampleN, time.Now().UnixNano())
 	fmt.Fprintf(os.Stderr, "采样完成: %d 条（每 repo 最多 %d 条）\n", len(instances), cfg.SampleN)
@@ -135,8 +139,9 @@ func main() {
 			mu.Lock()
 			results = append(results, result)
 			if appendErr := appendPrediction(predictionsPath, Prediction{
-				InstanceID: inst.InstanceID,
-				ModelPatch: result.Patch,
+				InstanceID:      inst.InstanceID,
+				ModelPatch:      result.Patch,
+				ModelNameOrPath: modelName,
 			}); appendErr != nil {
 				fmt.Fprintf(os.Stderr, "[error] 写入 predictions 失败 (%s): %v\n", inst.InstanceID, appendErr)
 			}

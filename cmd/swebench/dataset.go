@@ -22,9 +22,11 @@ type Instance struct {
 }
 
 // Prediction 是写入 predictions.jsonl 的一条记录（官方兼容格式）。
+// 官方评估器 swebench.harness.run_evaluation 要求同时携带 model_name_or_path 字段。
 type Prediction struct {
-	InstanceID string `json:"instance_id"`
-	ModelPatch string `json:"model_patch"`
+	InstanceID      string `json:"instance_id"`
+	ModelPatch      string `json:"model_patch"`
+	ModelNameOrPath string `json:"model_name_or_path"`
 }
 
 // RunResult 记录单个 instance 的运行结果，供汇总使用。
