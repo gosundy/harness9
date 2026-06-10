@@ -81,7 +81,13 @@ func runInstance(ctx context.Context, inst Instance, cfg Config) RunResult {
 	}
 
 	// 3. 创建 Docker Sandbox 环境
+	// SWE-bench 仓库需要 Python 环境；若用户未通过 SANDBOX_IMAGE 显式覆盖，
+	// 强制使用 python:3.11-slim 替代默认的 ubuntu:22.04，
+	// 避免 Agent 在无 Python 的容器中陷入无效的解释器搜索死循环。
 	sandboxCfg := sandbox.DefaultConfig()
+	if os.Getenv("SANDBOX_IMAGE") == "" {
+		sandboxCfg.Image = "python:3.11-slim"
+	}
 	mgr := sandbox.NewManager(sandboxCfg)
 	sandboxCtx, sandboxCancel := context.WithTimeout(ctx, 60*time.Second)
 	defer sandboxCancel()
