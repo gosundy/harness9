@@ -46,7 +46,7 @@ func main() {
 	flag.StringVar(&cfg.DatasetPath, "dataset", "", "SWE-bench Lite JSONL 文件路径（必填）")
 	flag.IntVar(&cfg.SampleN, "sample", 10, "每个 repo 抽取的 instance 数量")
 	flag.StringVar(&cfg.OutputDir, "output", "./swebench-results", "输出目录")
-	flag.IntVar(&cfg.MaxTurns, "max-turns", 30, "每个 instance 最大 LLM Turn 数")
+	flag.IntVar(&cfg.MaxTurns, "max-turns", 0, "每个 instance 最大 LLM Turn 数（0 = 沿用引擎默认值 500）")
 	flag.IntVar(&cfg.Parallel, "parallel", 1, "并发 instance 数")
 	flag.BoolVar(&cfg.Resume, "resume", false, "跳过已有结果的 instance（断点续跑）")
 	flag.IntVar(&cfg.TimeoutMins, "timeout", 10, "单个 instance 超时（分钟）")
@@ -89,8 +89,8 @@ func main() {
 		fmt.Fprintf(os.Stderr, "断点续跑: 跳过 %d 个已有结果\n", len(skipIDs))
 	}
 
-	// 创建输出目录
-	if err := os.MkdirAll(cfg.OutputDir, 0755); err != nil {
+	// 创建输出目录及 trajectory 日志子目录
+	if err := os.MkdirAll(filepath.Join(cfg.OutputDir, "logs"), 0755); err != nil {
 		fmt.Fprintf(os.Stderr, "创建输出目录失败: %v\n", err)
 		os.Exit(1)
 	}

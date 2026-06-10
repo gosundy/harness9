@@ -1,10 +1,13 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -12,6 +15,7 @@ import (
 	"github.com/harness9/internal/hooks"
 	"github.com/harness9/internal/provider"
 	"github.com/harness9/internal/sandbox"
+	"github.com/harness9/internal/schema"
 	"github.com/harness9/internal/tools"
 )
 
@@ -20,6 +24,7 @@ type Config struct {
 	DatasetPath string
 	OutputDir   string
 	SampleN     int
+	// MaxTurns 为 0 时沿用引擎默认值（500），大于 0 时显式限制。
 	MaxTurns    int
 	Parallel    int
 	Resume      bool
@@ -100,19 +105,25 @@ func runInstance(ctx context.Context, inst Instance, cfg Config) RunResult {
 	hookReg := hooks.NewHookRegistry(registry)
 
 	// 5. 构造 provider 和 engine
+	// MaxTurns=0 时不传 WithMaxTurns，沿用引擎默认值（500）。
 	llm, err := newProvider(cfg.Model)
 	if err != nil {
 		return RunResult{Instance: inst, Error: fmt.Errorf("创建 LLM provider 失败: %w", err), Duration: time.Since(start)}
 	}
-	eng := engine.NewAgentEngine(llm, hookReg, tmpDir,
-		engine.WithMaxTurns(cfg.MaxTurns),
+	engOpts := []engine.Option{
 		engine.WithPromptBuilder(&swebenchPromptBuilder{instance: inst}),
-	)
+	}
+	if cfg.MaxTurns > 0 {
+		engOpts = append(engOpts, engine.WithMaxTurns(cfg.MaxTurns))
+	}
+	eng := engine.NewAgentEngine(llm, hookReg, tmpDir, engOpts...)
 
-	// 6. 执行 agent loop（带 per-instance 超时）
+	// 6. 执行 agent loop（带 per-instance 超时），同时将完整 trajectory 写入日志
 	instanceCtx, instanceCancel := context.WithTimeout(ctx, time.Duration(cfg.TimeoutMins)*time.Minute)
 	defer instanceCancel()
-	runErr := eng.Run(instanceCtx, "请修复上述 Issue。")
+
+	logPath := filepath.Join(cfg.OutputDir, "logs", inst.InstanceID+".log")
+	runErr := runWithTrajectory(instanceCtx, eng, "请修复上述 Issue。", logPath, inst)
 
 	// 7. 收集 patch（无论 runErr 如何，MaxTurns 触发时也可能有部分 patch）
 	diffCtx, diffCancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -124,4 +135,82 @@ func runInstance(ctx context.Context, inst Instance, cfg Config) RunResult {
 		return RunResult{Instance: inst, Error: runErr, Duration: time.Since(start)}
 	}
 	return RunResult{Instance: inst, Patch: patch, Duration: time.Since(start)}
+}
+
+// runWithTrajectory 通过 RunStream 执行 agent loop，将所有事件以可读格式写入 logPath。
+// 日志文件创建失败时 fail-open：agent 仍正常运行，只是不写日志。
+// Benchmark 场景下自动批准所有工具审批请求（无人值守）。
+func runWithTrajectory(ctx context.Context, eng *engine.AgentEngine, userPrompt, logPath string, inst Instance) error {
+	// 创建日志文件（fail-open：失败时写入 Discard，agent 继续运行）
+	var w io.Writer = io.Discard
+	if lf, err := os.Create(logPath); err == nil {
+		bw := bufio.NewWriter(lf)
+		defer func() { bw.Flush(); lf.Close() }()
+		w = bw
+	}
+
+	// 写文件头
+	fmt.Fprintf(w, "=== SWE-bench Instance: %s ===\n", inst.InstanceID)
+	fmt.Fprintf(w, "Repo:        %s\n", inst.Repo)
+	fmt.Fprintf(w, "BaseCommit:  %s\n", inst.BaseCommit)
+	fmt.Fprintf(w, "StartTime:   %s\n\n", time.Now().Format("2006-01-02 15:04:05"))
+
+	stream, err := eng.RunStream(ctx, userPrompt)
+	if err != nil {
+		return err
+	}
+
+	currentTurn := 0
+	var runErr error
+
+	for evt := range stream {
+		// 新 Turn 时打印分隔符
+		if evt.Turn > 0 && evt.Turn != currentTurn {
+			currentTurn = evt.Turn
+			fmt.Fprintf(w, "\n\n--- Turn %d ---\n", currentTurn)
+		}
+
+		switch evt.Type {
+		case engine.EventActionDelta:
+			fmt.Fprint(w, evt.Data.(string))
+
+		case engine.EventThinkingDelta:
+			// thinking 内容用 <thinking> 标记，便于后处理过滤
+			fmt.Fprint(w, evt.Data.(string))
+
+		case engine.EventToolStart:
+			tc := evt.Data.(schema.ToolCall)
+			fmt.Fprintf(w, "\n\n[Tool Call: %s]\n%s\n", tc.Name, string(tc.Arguments))
+
+		case engine.EventToolResult:
+			trd := evt.Data.(engine.ToolResultData)
+			status := "ok"
+			if trd.Result.IsError {
+				status = "error"
+			}
+			fmt.Fprintf(w, "\n[Tool Result: %s | %s | %s]\n%s\n",
+				trd.Result.ToolCallID, trd.Duration.Round(time.Millisecond), status,
+				trd.Result.Output)
+
+		case engine.EventTokenUpdate:
+			tud := evt.Data.(engine.TokenUpdateData)
+			fmt.Fprintf(w, "\n[Tokens: %d]\n", tud.EstimatedTokens)
+
+		case engine.EventCompaction:
+			cd := evt.Data.(engine.CompactionData)
+			fmt.Fprintf(w, "\n[Compaction: %d→%d tokens, %d→%d msgs]\n",
+				cd.TokensBefore, cd.TokensAfter, cd.MsgsBefore, cd.MsgsAfter)
+
+		case engine.EventError:
+			runErr = fmt.Errorf("%s", evt.Data.(string))
+
+		case engine.EventApprovalRequired:
+			// Benchmark 无人值守模式：自动批准所有工具调用
+			req := evt.Data.(engine.ApprovalRequest)
+			fmt.Fprintf(w, "\n[Auto-Approved: %s]\n", req.ToolCall.Name)
+			req.ResponseCh <- hooks.ApprovalResponse{Approved: true}
+		}
+	}
+
+	return runErr
 }

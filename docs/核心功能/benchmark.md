@@ -151,10 +151,12 @@ runInstance(ctx, inst, cfg)
 │      read_file / write_file / edit_file（bind mount，宿主机侧 IO）
 │
 ├─ 5. engine.NewAgentEngine(llm, hookReg, tmpDir,
-│        WithMaxTurns(cfg.MaxTurns),
 │        WithPromptBuilder(&swebenchPromptBuilder{inst}))
+│        // MaxTurns > 0 时才附加 WithMaxTurns，否则沿用引擎默认值（500）
 │
-├─ 6. eng.Run(instanceCtx, "请修复上述 Issue。")        [per-instance timeout]
+├─ 6. runWithTrajectory(instanceCtx, eng, prompt, logPath, inst)  [per-instance timeout]
+│      → engine.RunStream() 消费所有事件，写入 logs/<instance_id>.log
+│      → Benchmark 模式自动批准所有工具审批（无人值守）
 │
 ├─ 7. git diff（独立 context.Background，Ctrl+C 安全）  [10s timeout]
 │      → patch string
@@ -169,7 +171,8 @@ runInstance(ctx, inst, cfg)
 | git clone 在宿主机执行 | 容器内无 git credential，bind mount 后容器可见相同文件 |
 | bash 工具路由进容器 | Agent 执行的 Python 代码在隔离环境中运行，不污染宿主机 |
 | git diff 用独立 context | Ctrl+C 取消主 context 后，仍能收集已修改的 patch，避免丢弃有效结果 |
-| MaxTurns 触发时仍收集 patch | Agent 可能在第 N 轮已完成修复，但触发了 MaxTurns 上限，patch 不应丢失 |
+| MaxTurns 默认沿用引擎值（500） | SWE-bench 复杂任务不应被过早截断，使用 `--max-turns N` 显式限制 |
+| RunStream 替代 Run | 以事件流方式捕获完整 trajectory，写入 `logs/` 目录供后续分析 |
 | predictions.jsonl 追加写 | 每条完成后立即 flush，配合 `--resume` 支持断点续跑 |
 
 ### 3.3 采样策略
@@ -304,11 +307,10 @@ cd /path/to/harness9
 
 go run ./cmd/swebench \
   --dataset swe-bench-lite.jsonl \
-  --sample 10 \           # 每个 repo 取 10 条，约 110 条总量
+  --sample 10 \       # 每个 repo 取 10 条，约 110 条总量
   --output ./swebench-results \
-  --max-turns 30 \        # 每个 instance 最多 30 轮 LLM 调用
-  --parallel 2 \          # 同时运行 2 个 instance
-  --timeout 15            # 每个 instance 超时 15 分钟
+  --parallel 2 \      # 同时运行 2 个 instance
+  --timeout 15        # 每个 instance 超时 15 分钟（--max-turns 默认 0 = 不限轮数）
 ```
 
 如果没有 `.env` 文件，也可直接通过环境变量传入：
@@ -348,10 +350,40 @@ go run ./cmd/swebench \
 
 ```
 swebench-results/
-├── predictions.jsonl   # 每行一条 {"instance_id":..., "model_patch":...}
-├── run_summary.md      # 运行摘要（总数/patch 数/出错数/按 repo 分布）
-└── ...
+├── predictions.jsonl        # 每行一条 {"instance_id":..., "model_patch":...}
+├── run_summary.md           # 运行摘要（总数/patch 数/出错数/按 repo 分布）
+└── logs/
+    ├── django__django-12908.log   # 每个 instance 的完整 trajectory
+    ├── astropy__astropy-5678.log
+    └── ...
 ```
+
+**Trajectory 日志格式**（`logs/<instance_id>.log`）：
+
+```
+=== SWE-bench Instance: django__django-12908 ===
+Repo:        django/django
+BaseCommit:  abc123...
+StartTime:   2026-06-09 14:30:00
+
+--- Turn 1 ---
+Let me start by exploring the repository structure to understand the codebase...
+
+[Tool Call: bash]
+{"command":"find . -type f -name \"*.py\" | grep -v __pycache__ | head -40"}
+
+[Tool Result: abc12345 | 350ms | ok]
+./django/utils/autoreload.py
+./django/core/management/base.py
+...
+
+[Tokens: 4821]
+
+--- Turn 2 ---
+I can see the issue in autoreload.py. Let me read the relevant section...
+```
+
+日志包含：每轮 LLM 输出文本、工具调用参数、工具返回结果（含耗时和状态）、token 用量、上下文压缩事件。
 
 `run_summary.md` 示例：
 
@@ -430,7 +462,7 @@ go run ./cmd/swebench --help
 | `--dataset` | string | **必填** | SWE-bench Lite JSONL 文件路径 |
 | `--sample` | int | 10 | 每个 repo 抽取的 instance 数量（≥1）|
 | `--output` | string | `./swebench-results` | 输出目录 |
-| `--max-turns` | int | 30 | 每个 instance 最大 LLM Turn 数 |
+| `--max-turns` | int | 0 | 每个 instance 最大 Turn 数（0 = 引擎默认 500）|
 | `--parallel` | int | 1 | 并发 instance 数（≥1）|
 | `--resume` | bool | false | 跳过已有结果（断点续跑）|
 | `--timeout` | int | 10 | 单个 instance 超时（分钟）|
