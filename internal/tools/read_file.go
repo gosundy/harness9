@@ -197,12 +197,16 @@ func readFileByLines(fullPath string, startLine, endLine int) (string, error) {
 	scanner.Buffer(make([]byte, 512*1024), 512*1024)
 
 	lineNum := 0
+	// truncated 标记循环因"超过 endLine"退出（而非文件结束），用于决定是否输出截断提示。
+	// 不在循环结束后再调用 scanner.Scan()——那会消费额外一行，产生副作用。
+	truncated := false
 	for scanner.Scan() {
 		lineNum++
 		if lineNum < startLine {
 			continue
 		}
 		if lineNum > endLine {
+			truncated = true
 			break
 		}
 		sb.WriteString(scanner.Text())
@@ -212,16 +216,14 @@ func readFileByLines(fullPath string, startLine, endLine int) (string, error) {
 		return "", fmt.Errorf("读取文件失败: %w", err)
 	}
 
+	// sb.Len() == 0 只有一种真实情况：startLine 超出文件总行数。
+	// "区间内全是空行"不可能发生——空行也会写入 '\n'，sb.Len() > 0。
 	if sb.Len() == 0 {
-		if lineNum < startLine {
-			return fmt.Sprintf("[start_line=%d 超出文件总行数（%d 行）]", startLine, lineNum), nil
-		}
-		return fmt.Sprintf("[第 %d-%d 行内容为空]", startLine, endLine), nil
+		return fmt.Sprintf("[start_line=%d 超出文件总行数（%d 行）]", startLine, lineNum), nil
 	}
 
-	// 若实际文件行数超过 endLine 的范围，注明截断
 	suffix := ""
-	if lineNum >= endLine && scanner.Scan() {
+	if truncated {
 		suffix = fmt.Sprintf("\n...[已读取第 %d-%d 行，如需继续请使用 start_line=%d]...", startLine, endLine, endLine+1)
 	}
 	return sb.String() + suffix, nil

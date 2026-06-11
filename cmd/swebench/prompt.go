@@ -57,6 +57,7 @@ python3 -c "print('PYTHON_OK')" 2>/dev/null || echo "NO_PYTHON"
 - 若输出 ` + "`NO_PYTHON`" + `：**立即跳过 Step 3 全部内容**，转静态分析，直接进入 Step 4
 
 **阶段 B：若 PYTHON_OK，追加仓库导入检测**
+包名通常与仓库目录同名（如 ` + "`django`" + `、` + "`flask`" + `、` + "`pytest`" + `、` + "`sympy`" + `）；scikit-learn 例外，包名为 ` + "`sklearn`" + `。
 ` + "```" + `bash
 python3 -c "import <仓库主包名>" 2>&1 | head -3
 ` + "```" + `
