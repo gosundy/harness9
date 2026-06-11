@@ -488,6 +488,68 @@ harness9/
 
 ---
 
+## SWE-bench Benchmark
+
+评估 harness9 在 [SWE-bench Lite](https://github.com/princeton-nlp/SWE-bench) 上的 Agent 能力。
+
+### 前置条件
+
+- Docker daemon 运行中（用于 Sandbox 隔离）
+- `git` 命令可用
+- `OPENAI_API_KEY` 已配置
+
+### 运行步骤
+
+**1. 下载数据集**
+
+```bash
+pip install datasets
+python -c "
+from datasets import load_dataset
+ds = load_dataset('princeton-nlp/SWE-bench_Lite', split='test')
+ds.to_json('swe-bench-lite.jsonl')
+"
+```
+
+**2. 运行 benchmark**
+
+```bash
+SANDBOX_IMAGE=python:3.11-slim \
+OPENAI_API_KEY=your_key \
+LLM_MODEL=openai/gpt-4o \
+go run ./cmd/swebench \
+  --dataset swe-bench-lite.jsonl \
+  --sample 10 \
+  --output ./swebench-results \
+  --max-turns 30 \
+  --parallel 2
+```
+
+**3. 评估结果**
+
+```bash
+pip install swebench
+python -m swebench.harness.run_evaluation \
+    --dataset_name princeton-nlp/SWE-bench_Lite \
+    --predictions_path ./swebench-results/predictions.jsonl \
+    --max_workers 4 \
+    --run_id harness9-lite-v1
+```
+
+### 参数说明
+
+| 参数 | 说明 | 默认值 |
+|------|------|--------|
+| `--dataset` | JSONL 文件路径 | 必填 |
+| `--sample` | 每 repo 抽取条数 | 10 |
+| `--output` | 输出目录 | ./swebench-results |
+| `--max-turns` | 每 instance 最大 Turn 数 | 30 |
+| `--parallel` | 并发数 | 1 |
+| `--resume` | 断点续跑 | false |
+| `--timeout` | 单 instance 超时（分钟） | 10 |
+
+---
+
 ## License
 
 MIT

@@ -110,19 +110,54 @@ func (m *Manager) DestroyAll(ctx context.Context) {
 	m.notify()
 }
 
-// ReapOrphans 清理上次进程崩溃遗留的孤儿容器（label=harness9=1，status=exited）。
+// ReapOrphans 清理上次进程崩溃遗留的孤儿容器（label=harness9=1，全部状态）。
+//
+// 原实现只清理 status=exited 的容器；进程被 SIGKILL 强杀时 defer 不运行，
+// 容器会以 Running 状态残留——持有已删除 tmpDir 的 bind mount，
+// 在 macOS Docker Desktop 上会导致 VirtioFS 慢，使后续容器启动超时。
+// 修正为清理所有 harness9 标记的容器（无论状态），使用 rm -f 强制停止并删除。
+//
+// 安全性：跳过当前 Manager 实例自身持有的容器（通过 shortDockerID 比对），
+// 避免多个进程并发运行时误杀彼此的活跃容器。
 func (m *Manager) ReapOrphans(ctx context.Context) error {
 	out, err := realCmdRunner(ctx,
 		"ps", "-a",
 		"--filter", "label=harness9=1",
-		"--filter", "status=exited",
 		"--format", "{{.ID}}",
 	)
 	if err != nil {
 		return fmt.Errorf("sandbox: 列出孤儿容器失败: %w", err)
 	}
-	for _, id := range strings.Fields(out) {
-		if _, err := realCmdRunner(ctx, "rm", id); err != nil {
+	ids := strings.Fields(out)
+	if len(ids) == 0 {
+		return nil
+	}
+
+	// 收集当前 Manager 持有的容器短 ID，跳过这些容器避免误杀。
+	// docker ps 返回 12 位短 ID；shortDockerID 取 dockerID 前 12 位做比对。
+	m.mu.RLock()
+	owned := make(map[string]bool, len(m.containers))
+	for _, c := range m.containers {
+		c.mu.RLock()
+		if c.dockerID != "" {
+			owned[shortDockerID(c.dockerID)] = true
+		}
+		c.mu.RUnlock()
+	}
+	m.mu.RUnlock()
+
+	var toClean []string
+	for _, id := range ids {
+		if !owned[id] {
+			toClean = append(toClean, id)
+		}
+	}
+	if len(toClean) == 0 {
+		return nil
+	}
+	log.Print(logfmt.FormatMsg("sandbox", fmt.Sprintf("发现 %d 个孤儿容器，正在清理...", len(toClean))))
+	for _, id := range toClean {
+		if _, err := realCmdRunner(ctx, "rm", "-f", id); err != nil {
 			log.Print(logfmt.FormatMsg("sandbox", fmt.Sprintf("清理孤儿容器 %s 失败: %v", id, err)))
 		}
 	}

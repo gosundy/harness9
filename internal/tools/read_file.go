@@ -57,7 +57,7 @@ func (t *ReadFileTool) Name() string { return "read_file" }
 func (t *ReadFileTool) Definition() schema.ToolDefinition {
 	return schema.ToolDefinition{
 		Name:        t.Name(),
-		Description: "读取指定路径的文件内容。请提供相对工作区的相对路径。支持 offset/limit 参数分页读取大文件。",
+		Description: "读取指定路径的文件内容。请提供相对工作区的相对路径。支持 offset/limit 参数分页读取大文件。注意：offset 和 limit 的单位均为字节（byte），不是行号。",
 		InputSchema: map[string]interface{}{
 			"type": "object",
 			"properties": map[string]interface{}{
@@ -67,11 +67,11 @@ func (t *ReadFileTool) Definition() schema.ToolDefinition {
 				},
 				"offset": map[string]interface{}{
 					"type":        "integer",
-					"description": "起始字节偏移（默认 0，从文件开头读取）",
+					"description": "起始字节偏移，单位为字节（不是行号）。默认 0，从文件开头读取。读取截断时，截断提示会给出下一个 offset 值。",
 				},
 				"limit": map[string]interface{}{
 					"type":        "integer",
-					"description": fmt.Sprintf("读取字节数（默认 %d）", maxReadLen),
+					"description": fmt.Sprintf("最多读取的字节数，单位为字节（不是行数）。默认 %d 字节。建议至少设为 500 以上，否则可能因截断返回不完整内容。", maxReadLen),
 				},
 			},
 			"required": []string{"path"},
@@ -138,7 +138,9 @@ func (t *ReadFileTool) Execute(ctx context.Context, args json.RawMessage) (strin
 	if len(content) > limit {
 		nextOffset := offset + int64(limit)
 		return string(content[:limit]) + fmt.Sprintf(
-			"\n\n...[内容已截断，已读取 offset=%d 起的 %d 字节，文件总大小 %d 字节，如需继续读取请使用 offset=%d]...",
+			"\n\n...[内容已截断。offset 和 limit 单位均为字节（非行号）。"+
+				"已读取 offset=%d 起的 %d 字节，文件总大小 %d 字节。"+
+				"如需继续读取，请使用 offset=%d（不要把行号当作 offset）]...",
 			offset, limit, totalSize, nextOffset,
 		), nil
 	}
