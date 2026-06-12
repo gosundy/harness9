@@ -23,6 +23,7 @@ func TestIsSafeURL(t *testing.T) {
 		// loopback
 		{"loopback 127.0.0.1", "http://127.0.0.1/secret", true, ""},
 		{"loopback 127.1.2.3", "http://127.1.2.3/", true, ""},
+		{"IPv6 loopback ::1", "http://[::1]/", true, ""},
 		// 链路本地 + 云 metadata
 		{"link-local 169.254.1.1", "http://169.254.1.1/", true, ""},
 		{"aws metadata", "http://169.254.169.254/latest/meta-data", true, ""},

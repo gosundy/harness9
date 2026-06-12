@@ -24,9 +24,10 @@ var blockedCIDRs = func() []*net.IPNet {
 	var nets []*net.IPNet
 	for _, cidr := range cidrs {
 		_, n, err := net.ParseCIDR(cidr)
-		if err == nil {
-			nets = append(nets, n)
+		if err != nil {
+			panic(fmt.Sprintf("invalid CIDR %q: %v", cidr, err))
 		}
+		nets = append(nets, n)
 	}
 	return nets
 }()
@@ -38,20 +39,20 @@ var blockedCIDRs = func() []*net.IPNet {
 func isSafeURL(rawURL string) error {
 	u, err := url.Parse(rawURL)
 	if err != nil {
-		return fmt.Errorf("无效 URL: %w", err)
+		return fmt.Errorf("invalid URL: %w", err)
 	}
 	if u.Scheme != "http" && u.Scheme != "https" {
-		return fmt.Errorf("unsupported scheme: %s（仅允许 http/https）", u.Scheme)
+		return fmt.Errorf("unsupported scheme %q, only http/https allowed", u.Scheme)
 	}
 	if u.User != nil {
-		return fmt.Errorf("URL 中包含 userinfo（user:pass@...），拒绝访问")
+		return fmt.Errorf("URL userinfo (user:pass@host) not allowed")
 	}
 
 	host := u.Hostname()
 	addrs, err := net.LookupHost(host)
 	if err != nil {
 		// DNS 解析失败 → fail-closed
-		return fmt.Errorf("DNS 解析失败（%s）: %w", host, err)
+		return fmt.Errorf("DNS lookup failed for %s: %w", host, err)
 	}
 
 	for _, addr := range addrs {
@@ -65,11 +66,11 @@ func isSafeURL(rawURL string) error {
 		}
 		// IPv6 loopback
 		if ip.Equal(net.IPv6loopback) {
-			return fmt.Errorf("blocked: loopback 地址 %s", ip)
+			return fmt.Errorf("blocked: loopback address %s", ip)
 		}
 		for _, network := range blockedCIDRs {
 			if network.Contains(ip) {
-				return fmt.Errorf("blocked: 私有/保留地址 %s（范围 %s）", ip, network)
+				return fmt.Errorf("blocked: private/reserved address %s (range %s)", ip, network)
 			}
 		}
 	}
