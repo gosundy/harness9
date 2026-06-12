@@ -247,6 +247,8 @@ Flags:
 		tools.NewTodoWriteTool(todoStore, tools.WithPlanWriter(planWriter)),
 		tools.NewMemoryWriteTool(ltmStore, ltmPrecis),
 		tools.NewMemorySearchTool(ltmStore),
+		tools.NewWebFetchTool(),
+		tools.NewWebSearchTool(),
 	} {
 		if err := registry.Register(tool); err != nil {
 			log.Fatal(logfmt.FormatMsg("main", fmt.Sprintf("注册工具 %s 失败: %v", tool.Name(), err)))
@@ -282,6 +284,8 @@ Flags:
 		tools.NewBashTool(workDir),
 		tools.NewEditFileTool(workDir),
 		skills.NewUseSkillTool(skillsIndex),
+		tools.NewWebFetchTool(),
+		tools.NewWebSearchTool(),
 	}
 
 	// 子代理定义注册表：先注册内置，再加载文件式定义（文件可覆盖同名内置）。

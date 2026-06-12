@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/harness9/internal/skills"
 )
@@ -76,7 +77,8 @@ func (b *DefaultPromptBuilder) Build() string {
 			"- 系统操作：执行 Shell 命令，管理进程，安装工具和依赖包，与操作系统交互\n"+
 			"- 文件操作：精确读取、写入和编辑文件，保持代码风格和约定\n"+
 			"- 自主协作：将多工具串联，自主完成复杂多步骤任务\n\n"+
-			"工作目录：%s\n\n"+
+			"工作目录：%s\n"+
+			"当前日期：%s\n\n"+
 			"工作准则：\n"+
 			"- 先调查后行动：优先读取相关文件、运行诊断命令，理解上下文后再修改\n"+
 			"- 写代码后必须运行验证：编写或修改代码后，执行编译 / 运行 / 测试，确认实际可工作；"+
@@ -86,6 +88,7 @@ func (b *DefaultPromptBuilder) Build() string {
 			"- 优先局部修改而非整体重写；保持现有代码风格和约定\n"+
 			"- 任务描述模糊时，选择最合理的解释后直接推进",
 		b.workDir,
+		time.Now().Format("2006-01-02"),
 	))
 
 	// 2. AGENTS.md（不存在或为空时静默跳过）
@@ -127,7 +130,7 @@ func (b *DefaultPromptBuilder) Build() string {
 		)
 	}
 
-	// 5.5. Sandbox 执行环境提示（仅在启用 Sandbox 时注入）
+	// 5a. Sandbox 执行环境提示（仅在启用 Sandbox 时注入，与 Offload 提示平级）
 	if b.sandboxEnabled {
 		parts = append(parts,
 			"## Sandbox 执行环境\n\n"+
@@ -143,7 +146,7 @@ func (b *DefaultPromptBuilder) Build() string {
 		)
 	}
 
-	// 6. 长期记忆精华（每次构建时读取，确保最新；reader 为 nil 或返回空时跳过）
+	// 6. 长期记忆精华（每次 Build 时调用 ltmReader 读取最新内容；reader 为 nil 或返回空时跳过）
 	if b.ltmReader != nil {
 		if content := b.ltmReader(); content != "" {
 			parts = append(parts,
