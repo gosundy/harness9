@@ -39,8 +39,8 @@ func extractContent(body io.Reader, rawURL string, maxChars int) (string, error)
 		return "", fmt.Errorf("page exceeds 1MB size limit")
 	}
 
-	parsedURL, _ := url.Parse(rawURL)
-	if parsedURL == nil {
+	parsedURL, parseErr := url.Parse(rawURL)
+	if parseErr != nil || parsedURL == nil {
 		parsedURL = &url.URL{}
 	}
 
