@@ -129,13 +129,17 @@ func (t *WebSearchTool) duckDuckGoSearch(ctx context.Context, query string, maxR
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("http request failed: %w", err)
 	}
 	defer resp.Body.Close()
 
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("unexpected status %d from search backend", resp.StatusCode)
+	}
+
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("read response body: %w", err)
 	}
 
 	return parseDDGResults(string(body), maxResults), nil
