@@ -99,11 +99,13 @@ URL 输入
 |------|------|:------:|
 | `169.254.0.0/16` | 链路本地 + AWS/Azure/GCP metadata 端点 | 永久禁止 |
 | `127.0.0.0/8` | IPv4 loopback | 默认禁止 |
-| `::1` | IPv6 loopback | 默认禁止 |
+| `::1` | IPv6 loopback（`net.IPv6loopback` 独立检查） | 默认禁止 |
 | `10.0.0.0/8` | RFC1918 私网 | 默认禁止 |
 | `172.16.0.0/12` | RFC1918 私网 | 默认禁止 |
 | `192.168.0.0/16` | RFC1918 私网 | 默认禁止 |
 | `100.64.0.0/10` | CGNAT | 默认禁止 |
+| `fe80::/10` | IPv6 链路本地（等价于 IPv4 169.254.0.0/16） | 默认禁止 |
+| `fc00::/7` | IPv6 唯一本地地址 ULA（等价于 IPv4 RFC1918 私网） | 默认禁止 |
 
 ### 为什么 DNS 解析后二次检查 IP
 
@@ -236,9 +238,9 @@ tool := &WebSearchTool{backendURL: server.URL}
 ```
 internal/tools/
 ├── web_safety.go        # SSRF 防护：isSafeURL（检查链 + blockedCIDRs）
-├── web_safety_test.go   # 16 个测试用例：IP 段 / scheme / DNS fail-closed / IPv6
-├── web_content.go       # HTML→Markdown 管线：extractContent + extractPlainText + assemblePage
-├── web_content_test.go  # 4 个测试用例：基础转换 / 截断 / fallback / 超大 body
+├── web_safety_test.go   # 19 个测试用例：IP 段 / scheme / DNS fail-closed / IPv6 / IPv6 ULA / IPv6 链路本地
+├── web_content.go       # HTML→Markdown 管线：extractContent + extractPlainText + assemblePage（UTF-8 安全截断）
+├── web_content_test.go  # 5 个测试用例：基础转换 / 截断 / fallback / 超大 body / UTF-8 安全截断
 ├── web_fetch.go         # WebFetchTool：HTTP GET + Content-Type 分支
 ├── web_fetch_test.go    # 6 个测试用例：SSRF / HTML / text / unsupported / 空URL / 4xx
 ├── web_search.go        # WebSearchTool：DuckDuckGo POST + DOM 解析 + decodeUDDG

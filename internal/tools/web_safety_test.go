@@ -36,6 +36,11 @@ func TestIsSafeURL(t *testing.T) {
 		{"CGNAT 100.64.x", "http://100.64.0.1/", true, ""},
 		// DNS fail-closed
 		{"unresolvable domain", "http://does-not-exist.invalid/", true, ""},
+		// IPv6 ULA（唯一本地地址，等价于 IPv4 RFC1918 私网）
+		{"IPv6 ULA fc00::", "http://[fc00::1]/", true, ""},
+		{"IPv6 ULA fd00::", "http://[fd00::1]/", true, ""},
+		// IPv6 链路本地（等价于 IPv4 169.254.0.0/16）
+		{"IPv6 link-local fe80::", "http://[fe80::1]/", true, ""},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

@@ -62,6 +62,8 @@ func extractContent(body io.Reader, rawURL string, maxChars int) (string, error)
 }
 
 // assemblePage 组装最终输出字符串，超出 maxChars 时追加截断标记。
+// 截断点优先对齐到最后一个换行符（保证段落完整），并在 UTF-8 rune 边界处截断，
+// 避免切断多字节字符（如中文、emoji）产生无效 UTF-8。
 func assemblePage(rawURL, title, content string, maxChars int) string {
 	var sb strings.Builder
 	if title != "" {
@@ -79,11 +81,17 @@ func assemblePage(rawURL, title, content string, maxChars int) string {
 		return result
 	}
 
-	truncated := result[:maxChars]
-	if idx := strings.LastIndex(truncated, "\n"); idx > maxChars/2 {
-		truncated = truncated[:idx]
+	// 优先在 maxChars 前的最后一个换行处截断（保证段落完整），
+	// 若无合适换行位置则直接在 maxChars 处截断。
+	cut := maxChars
+	if idx := strings.LastIndex(result[:maxChars], "\n"); idx > maxChars/2 {
+		cut = idx
 	}
-	return truncated + fmt.Sprintf("\n\n[内容已截断，已显示前 %d 字符]", maxChars)
+	// 从 cut 向前回退到 UTF-8 rune 边界，防止截断多字节字符产生无效 UTF-8。
+	for cut > 0 && result[cut]&0xC0 == 0x80 {
+		cut--
+	}
+	return result[:cut] + fmt.Sprintf("\n\n[内容已截断，已显示前 %d 字符]", maxChars)
 }
 
 // extractPlainText 是 go-readability 失败时的兜底实现。

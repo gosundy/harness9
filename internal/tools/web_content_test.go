@@ -80,3 +80,48 @@ func TestExtractContentOversizedBody(t *testing.T) {
 		t.Error("expected error for oversized body, got nil")
 	}
 }
+
+func TestAssemblePageUTF8SafeTruncation(t *testing.T) {
+	// 用中文内容填充超出 maxChars 的页面，验证截断点不会切断多字节 UTF-8 字符。
+	content := strings.Repeat("你好世界！", 1000) // 每个 "你好世界！" = 15 字节（UTF-8）
+	result := assemblePage("https://example.com", "", content, 100)
+
+	// 截断标记必须存在
+	if !strings.Contains(result, "已截断") {
+		t.Errorf("result should contain truncation marker\ngot:\n%s", result)
+	}
+	// 结果必须是合法 UTF-8
+	if !isValidUTF8(result) {
+		t.Errorf("truncated result is not valid UTF-8")
+	}
+}
+
+// isValidUTF8 检查字符串是否是合法 UTF-8 序列。
+func isValidUTF8(s string) bool {
+	for i := 0; i < len(s); {
+		b := s[i]
+		var size int
+		switch {
+		case b < 0x80:
+			size = 1
+		case b < 0xC0:
+			return false // 非法起始字节（continuation byte）
+		case b < 0xE0:
+			size = 2
+		case b < 0xF0:
+			size = 3
+		default:
+			size = 4
+		}
+		if i+size > len(s) {
+			return false
+		}
+		for j := 1; j < size; j++ {
+			if s[i+j]&0xC0 != 0x80 {
+				return false
+			}
+		}
+		i += size
+	}
+	return true
+}

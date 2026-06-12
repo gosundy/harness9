@@ -129,7 +129,12 @@ func (t *WebFetchTool) Execute(ctx context.Context, args json.RawMessage) (strin
 		}
 		text := string(data)
 		if len(text) > maxChars {
-			return text[:maxChars] + fmt.Sprintf("\n\n[内容已截断，已显示前 %d 字符]", maxChars), nil
+			// 回退到 UTF-8 rune 边界，防止截断多字节字符
+			cut := maxChars
+			for cut > 0 && text[cut]&0xC0 == 0x80 {
+				cut--
+			}
+			return text[:cut] + fmt.Sprintf("\n\n[内容已截断，已显示前 %d 字符]", maxChars), nil
 		}
 		return text, nil
 	default:

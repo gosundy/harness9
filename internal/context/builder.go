@@ -130,7 +130,7 @@ func (b *DefaultPromptBuilder) Build() string {
 		)
 	}
 
-	// 5.5. Sandbox 执行环境提示（仅在启用 Sandbox 时注入）
+	// 5a. Sandbox 执行环境提示（仅在启用 Sandbox 时注入，与 Offload 提示平级）
 	if b.sandboxEnabled {
 		parts = append(parts,
 			"## Sandbox 执行环境\n\n"+
@@ -146,7 +146,7 @@ func (b *DefaultPromptBuilder) Build() string {
 		)
 	}
 
-	// 6. 长期记忆精华（每次构建时读取，确保最新；reader 为 nil 或返回空时跳过）
+	// 6. 长期记忆精华（每次 Build 时调用 ltmReader 读取最新内容；reader 为 nil 或返回空时跳过）
 	if b.ltmReader != nil {
 		if content := b.ltmReader(); content != "" {
 			parts = append(parts,

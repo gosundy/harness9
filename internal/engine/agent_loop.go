@@ -439,6 +439,8 @@ func (e *AgentEngine) saveHistoryWith(ctx context.Context, sess memory.Session, 
 //   - todo_write：Plan Mode 的核心产出——LLM 通过此工具输出结构化实现计划
 //   - use_skill：允许加载 Skills 获取项目规范文档
 //   - write_file / edit_file：不在白名单，从工具列表中硬性移除（工具层硬约束，优于 prompt 层软约束）
+//   - web_search / web_fetch：不在白名单；Plan Mode 专注于本地代码库探索，
+//     网络访问不属于规划阶段所需能力，如需联网研究请使用 Default/AutoEdit 模式
 var planModeWhitelist = map[string]bool{
 	"read_file":  true,
 	"bash":       true,

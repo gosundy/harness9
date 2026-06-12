@@ -11,7 +11,10 @@ import (
 )
 
 // blockedCIDRs 是永远拒绝访问的 IP 网段。
-// 169.254.0.0/16 永久禁止（云厂商 metadata 端点），其余为默认禁止的私网地址。
+// 169.254.0.0/16 永久禁止（云厂商 metadata 端点），其余为默认禁止的私网和保留地址。
+// IPv6 私有地址也列入阻止范围：
+//   - fe80::/10 — IPv6 链路本地地址（Link-Local），对应 IPv4 的 169.254.0.0/16
+//   - fc00::/7  — IPv6 唯一本地地址（Unique Local Address，ULA），对应 IPv4 的 RFC1918
 var blockedCIDRs = func() []*net.IPNet {
 	cidrs := []string{
 		"169.254.0.0/16", // 链路本地 + AWS/Azure/GCP metadata
@@ -20,6 +23,8 @@ var blockedCIDRs = func() []*net.IPNet {
 		"172.16.0.0/12",  // RFC1918
 		"192.168.0.0/16", // RFC1918
 		"100.64.0.0/10",  // CGNAT
+		"fe80::/10",      // IPv6 链路本地（Link-Local），等价于 IPv4 169.254.0.0/16
+		"fc00::/7",       // IPv6 唯一本地地址（ULA），等价于 IPv4 RFC1918 私网
 	}
 	var nets []*net.IPNet
 	for _, cidr := range cidrs {
