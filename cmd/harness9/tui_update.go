@@ -411,8 +411,14 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case compactDoneMsg:
 		m.compacting = false
 		data := msg.data
-		// 若 data 全为零值（无 compactor 或无 session），不追加通知。
-		if data.MsgsBefore > 0 {
+		switch {
+		case data.MsgsBefore == 0:
+			// 全零值：无 compactor 或无 session
+			m.lines = append(m.lines, dimStyle.Render("  ✦ /compact: 无可压缩内容（无 session 或无 compactor）"))
+		case data.MsgsBefore == data.MsgsAfter && data.TokensBefore == data.TokensAfter:
+			// 压缩前后完全相同：消息数量不足（session 中至少需要 2 条消息才能产生可摘要的 head）
+			m.lines = append(m.lines, dimStyle.Render("  ✦ /compact: 消息数量不足，无法压缩（至少需要 2 条消息）"))
+		default:
 			line := dimStyle.Render(fmt.Sprintf(
 				"  ✦ Context compacted: %d → %d messages, %s → %s tokens",
 				data.MsgsBefore, data.MsgsAfter,
@@ -420,8 +426,6 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				memory.FormatTokenCount(data.TokensAfter),
 			))
 			m.lines = append(m.lines, line)
-		} else {
-			m.lines = append(m.lines, dimStyle.Render("  ✦ /compact: 无可压缩内容（无 session 或无 compactor）"))
 		}
 		m.input.Focus()
 		return m, textinput.Blink

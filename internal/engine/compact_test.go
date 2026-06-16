@@ -47,9 +47,8 @@ func TestCompact_NilCompactor(t *testing.T) {
 	sess := memory.NewMemorySession("test-nil-compactor")
 	ctx := context.Background()
 
-	// 预填若干消息
+	// 预填若干消息（不含 system，与真实 session 不变式一致）
 	msgs := []schema.Message{
-		{Role: schema.RoleSystem, Content: "system"},
 		{Role: schema.RoleUser, Content: "hello"},
 		{Role: schema.RoleAssistant, Content: "world"},
 	}
@@ -92,13 +91,15 @@ func TestCompact_NilSession(t *testing.T) {
 }
 
 // TestCompact_Normal 验证正常执行：session 历史被替换为压缩后版本，CompactionData 字段正确。
+//
+// 与真实使用场景一致：system prompt 不持久化到 session DB，
+// Compact 内部动态注入 system prompt 后交给 compactor 处理，写回时剥离 system。
 func TestCompact_Normal(t *testing.T) {
 	sess := memory.NewMemorySession("test-normal-compact")
 	ctx := context.Background()
 
-	// 预填 5 条消息（含 system）
+	// 预填 4 条非 system 消息（真实场景中 session 不存储 system prompt）
 	msgs := []schema.Message{
-		{Role: schema.RoleSystem, Content: "system prompt"},
 		{Role: schema.RoleUser, Content: "msg1"},
 		{Role: schema.RoleAssistant, Content: "msg2"},
 		{Role: schema.RoleUser, Content: "msg3"},
@@ -108,7 +109,7 @@ func TestCompact_Normal(t *testing.T) {
 		t.Fatalf("AddMessages: %v", err)
 	}
 
-	comp := &fixedCompactor{keep: 2} // 保留 system + 最近 2 条 = 3 条
+	comp := &fixedCompactor{keep: 2} // 保留 system + 最近 2 条；写回时 system 被剥离 → session 有 2 条
 	eng := newTestEngine(WithSession(sess), WithCompactor(comp))
 
 	data, err := eng.Compact(ctx)
@@ -116,12 +117,12 @@ func TestCompact_Normal(t *testing.T) {
 		t.Fatalf("Compact error: %v", err)
 	}
 
-	// 验证 MsgsBefore / MsgsAfter
-	if data.MsgsBefore != 5 {
-		t.Errorf("MsgsBefore: want 5, got %d", data.MsgsBefore)
+	// MsgsBefore/After 均不含 system（session 不存 system）
+	if data.MsgsBefore != 4 {
+		t.Errorf("MsgsBefore: want 4, got %d", data.MsgsBefore)
 	}
-	if data.MsgsAfter != 3 {
-		t.Errorf("MsgsAfter: want 3, got %d", data.MsgsAfter)
+	if data.MsgsAfter != 2 {
+		t.Errorf("MsgsAfter: want 2, got %d", data.MsgsAfter)
 	}
 	// token 数应减少
 	if data.TokensAfter >= data.TokensBefore {
@@ -129,16 +130,17 @@ func TestCompact_Normal(t *testing.T) {
 			data.TokensBefore, data.TokensAfter)
 	}
 
-	// 验证 session 历史已被替换
+	// session 写回的消息不含 system（system 由 engine 动态注入，不持久化）
 	got, err := sess.GetMessages(ctx, 0)
 	if err != nil {
 		t.Fatalf("GetMessages after compact: %v", err)
 	}
-	if len(got) != 3 {
-		t.Errorf("session messages after compact: want 3, got %d", len(got))
+	if len(got) != 2 {
+		t.Errorf("session messages after compact: want 2, got %d", len(got))
 	}
-	if len(got) > 0 && got[0].Role != schema.RoleSystem {
-		t.Errorf("first message should be system, got %v", got[0].Role)
+	// 第一条应为 user（msg3），而非 system
+	if len(got) > 0 && got[0].Role == schema.RoleSystem {
+		t.Errorf("session should not contain system message after compact")
 	}
 }
 
