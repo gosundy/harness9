@@ -99,7 +99,9 @@ func (t *MemoryWriteTool) Execute(ctx context.Context, args json.RawMessage) (st
 		}
 		// 部分更新（merge）：先取出现有条目，仅覆盖调用方显式提供的字段，
 		// 未提供的字段保留原值，避免 LLM 仅想改某一字段却误清空 content。
-		// 注意：importance 与 ttl_days 为 0 时视为「未提供」（无法通过 update 显式设回 0）。
+		// 已知限制：importance 与 ttl_days 为整数类型，JSON 零值（0）与「未提供」无法区分。
+		// 因此无法通过 update 将 importance 或 ttl_days 显式设回 0；
+		// 如需设为 0，需先 remove 再 add。这是简化设计的权衡，LLM 极少需要将重要度降为 0。
 		existing, err := t.store.Get(ctx, in.ID)
 		if err != nil {
 			return "", fmt.Errorf("查询待更新记忆失败: %w", err)

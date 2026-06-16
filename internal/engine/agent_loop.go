@@ -441,6 +441,9 @@ func (e *AgentEngine) saveHistoryWith(ctx context.Context, sess memory.Session, 
 //   - write_file / edit_file：不在白名单，从工具列表中硬性移除（工具层硬约束，优于 prompt 层软约束）
 //   - web_search / web_fetch：不在白名单；Plan Mode 专注于本地代码库探索，
 //     网络访问不属于规划阶段所需能力，如需联网研究请使用 Default/AutoEdit 模式
+//   - memory_search / memory_write：不在白名单；Plan Mode 是轻量规划阶段，不触发记忆读写，
+//     避免规划过程产生副作用（如写入错误的记忆条目）；记忆操作在 Default/AutoEdit 模式下可用
+//   - task：不在白名单；Plan Mode 仅生成计划，不触发子代理委派（委派是执行阶段的动作）
 var planModeWhitelist = map[string]bool{
 	"read_file":  true,
 	"bash":       true,
