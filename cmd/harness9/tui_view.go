@@ -195,6 +195,14 @@ func (m tuiModel) renderToolProgress() string {
 		dimStyle.Render(fmt.Sprintf("  [%s]", elapsed))
 }
 
+// renderCompactProgress 渲染 /compact 命令执行期间的 spinner 进度行。
+// 与 renderToolProgress 风格一致：spinner + 动词 + 操作名称。
+func (m tuiModel) renderCompactProgress() string {
+	return "  " +
+		verbRunStyle.Render(m.spinner.View()+" 压缩中...") +
+		toolRunStyle.Render("  /compact")
+}
+
 // renderSubAgentProgress 渲染当前活跃子代理的流式进度块（暗青色缩进行）。
 // 仅在 len(m.subAgentLines) > 0 时由 View() 调用；每行已在 EventSubAgent 处理时带上 [agent] 前缀。
 func (m tuiModel) renderSubAgentProgress() string {
@@ -560,6 +568,10 @@ func (m tuiModel) View() string {
 		}
 		if m.running && m.currentTool != "" {
 			sb.WriteString(m.renderToolProgress())
+			sb.WriteByte('\n')
+		}
+		if m.compacting {
+			sb.WriteString(m.renderCompactProgress())
 			sb.WriteByte('\n')
 		}
 		if m.approvalPending {

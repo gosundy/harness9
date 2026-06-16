@@ -88,8 +88,19 @@ var builtinCmds = []struct {
 	{"new", "开启新会话"},
 	{"resume", "恢复历史会话"},
 	{"plan", "进入规划模式分析任务"},
+	{"compact", "手动压缩上下文"},
 	{"tasks", "查看后台子代理任务"},
 	{"exit", "退出 TUI"},
+}
+
+// compactDoneMsg 是 /compact 命令异步执行成功后投递的消息。
+type compactDoneMsg struct {
+	data engine.CompactionData
+}
+
+// compactErrMsg 是 /compact 命令异步执行失败后投递的消息。
+type compactErrMsg struct {
+	err error
 }
 
 // eventMsg 将 engine.Event 包装为 tea.Msg，供 Bubbletea 的 Update 分发。
@@ -297,6 +308,29 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 
+			// /compact 手动压缩上下文，不走 LLM 推理循环。
+			// 在 running 期间忽略（避免与正在进行的 runLoop 竞争 session 状态）。
+			if raw == "/compact" {
+				if m.running {
+					m.lines = append(m.lines, dimStyle.Render("  ⚠ /compact 不可在推理期间执行，请等待本次任务完成"))
+					m.input.Focus()
+					return m, textinput.Blink
+				}
+				m.lines = append(m.lines, dimStyle.Render("  ⟳ 正在压缩上下文…"))
+				m.compacting = true
+				eng := m.eng
+				return m, tea.Batch(
+					tea.Cmd(m.spinner.Tick),
+					func() tea.Msg {
+						data, err := eng.Compact(context.Background())
+						if err != nil {
+							return compactErrMsg{err: err}
+						}
+						return compactDoneMsg{data: data}
+					},
+				)
+			}
+
 			// Shell 模式: "!" 前缀直接执行 Bash 命令，绕过 LLM
 			// 不显示 "▶ You:" 行，改为 "$ cmd" 风格
 			if strings.HasPrefix(raw, "!") {
@@ -363,7 +397,7 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.handleEvent(engine.Event(msg))
 
 	case spinner.TickMsg:
-		if m.running && m.currentTool != "" {
+		if (m.running && m.currentTool != "") || m.compacting {
 			m.tickCount++
 			if m.tickCount%30 == 0 {
 				m.verbIdx = (m.verbIdx + 1) % len(spinnerVerbs)
@@ -373,6 +407,30 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, cmd
 		}
 		return m, nil
+
+	case compactDoneMsg:
+		m.compacting = false
+		data := msg.data
+		// 若 data 全为零值（无 compactor 或无 session），不追加通知。
+		if data.MsgsBefore > 0 {
+			line := dimStyle.Render(fmt.Sprintf(
+				"  ✦ Context compacted: %d → %d messages, %s → %s tokens",
+				data.MsgsBefore, data.MsgsAfter,
+				memory.FormatTokenCount(data.TokensBefore),
+				memory.FormatTokenCount(data.TokensAfter),
+			))
+			m.lines = append(m.lines, line)
+		} else {
+			m.lines = append(m.lines, dimStyle.Render("  ✦ /compact: 无可压缩内容（无 session 或无 compactor）"))
+		}
+		m.input.Focus()
+		return m, textinput.Blink
+
+	case compactErrMsg:
+		m.compacting = false
+		m.lines = append(m.lines, errorStyle.Render("  ✗ /compact 失败: "+msg.err.Error()))
+		m.input.Focus()
+		return m, textinput.Blink
 
 	case shellResultMsg:
 		// 展示侧（Scrollback）：UTF-8 安全截断至 maxShellDisplayLen，超出时追加截断提示。
@@ -743,6 +801,9 @@ func (m tuiModel) scrollHeight() int {
 	reserved := 3 // StatusBar + PromptInput + Footer
 	if m.running && m.currentTool != "" {
 		reserved++ // + ToolProgress
+	}
+	if m.compacting {
+		reserved++ // + CompactProgress
 	}
 	if n := len(m.subAgentLines); n > 0 {
 		reserved += n // + 子代理进度块（每行占一行）

@@ -275,6 +275,10 @@ type tuiModel struct {
 	// dispatch() 在下次发送 prompt 前将其前置注入并清空（展示与注入分离，避免与 TaskTracker 双重消费）。
 	pendingSubAgentInject []string
 
+	// compacting 为 true 时表示 /compact 命令正在异步执行中。
+	// 此期间在输入框上方显示 spinner 进度条，完成后插入压缩通知并恢复为 false。
+	compacting bool
+
 	// shellMode 为 true 时表示输入框当前以 "!" 开头，处于 Shell 执行模式。
 	// 由 Update() 中的输入实时检测逻辑驱动（非 running 状态下每次按键后检测），
 	// View 层据此切换状态栏背景色（深绿）、输入区徽章（[SHELL]）、footer 提示文字。
