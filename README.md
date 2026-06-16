@@ -340,6 +340,42 @@ echo "SANDBOX_ENABLED=false" >> .env
 
 详见 [Sandbox 沙箱系统](docs/核心功能/sandbox.md)。
 
+### AutoDev（`/autodev` 自举开发）
+
+在 harness9 TUI 中输入 `/autodev <功能描述>`，主 Agent 通过对话澄清需求、生成 Feature Spec，用户确认后自动委派 dev sub-agent 完成编码、测试、PR 创建——全程无需人工写代码：
+
+```
+› /autodev 实现一个 token_count 工具
+
+[主 Agent 澄清需求（2-3 轮对话）]
+> 这个工具需要支持多语言吗？
+
+用户: 是的，中文按字符计数，英文按 word 计数
+
+[主 Agent 生成 Spec 并等待确认]
+## Feature Spec: Add token_count Tool
+...
+
+用户: 确认
+
+[Dev Sub-Agent 启动，在 git worktree + Docker Sandbox 中工作]
+  ✓ go build ./...
+  ✓ go test ./... — PASS（第 1 次）
+  ✓ git push origin HEAD
+  ✓ gh pr create
+
+✓ PR 已创建：https://github.com/.../pull/42
+```
+
+- **三阶段流程**：需求澄清（对话）→ Spec 确认（强制人工审批）→ dev sub-agent 自动实现
+- **双重隔离**：git worktree（代码隔离）+ Docker Sandbox（执行隔离，需 Go 镜像）
+- **自愈迭代**：dev sub-agent 遇到测试失败后自主分析错误、修复代码、最多重试 3 次
+- **零额外配置**：复用现有 Skills 系统和 Sub-Agent 系统，无新 Go 代码
+
+前置条件：`gh` CLI 已登录；如需 Docker 隔离，在 `.env` 中设置 `SANDBOX_IMAGE=golang:1.25-bookworm`
+
+详见 [AutoDev 自举开发技术方案](docs/核心功能/autodev.md)。
+
 ### 网页搜索与抓取（`web_search` + `web_fetch`）
 
 Agent 可直接搜索互联网并抓取页面内容，无需任何 API Key 或外部账号：
@@ -426,6 +462,7 @@ for evt := range stream {
 | **Sandbox**    | Docker 容器级隔离：OS 级进程沙箱（cap-drop/no-new-privileges）、Agent 级独立容器、bind mount 工具透明路由、TUI SandboxBar、孤儿容器回收；默认开启；`SANDBOX_ENABLED=false` 关闭 | ✅   |
 | **Observability** | OpenTelemetry 链路追踪：`OTELEngineObserver`（Interaction/Turn Span）+ `TracingProvider`（LLM Span + Token Metrics）+ `ObservabilityHook`（Tool Span）；默认 noop 零开销；支持接入 Langfuse / Grafana / Jaeger | ✅   |
 | **Evals**      | 自动化评估框架：`ScriptedProvider`（确定性 mock）+ `Assertion`（Hard/Soft 断言）+ `EvalHarness`（RunCase/Suite）+ `SetupHermeticEnv` + `BuildReport`（JSON/Markdown）；16 个黄金数据集用例；CI Quality Gate | ✅   |
+| **AutoDev**    | 自举开发闭环：`/autodev` AgentSkill（需求澄清→Spec 生成→确认关卡）+ dev sub-agent（`.harness9/agents/dev.md`，git worktree + Docker Sandbox）；零新 Go 代码，复用 Skills/Sub-Agent/Sandbox 基础设施 | ✅   |
 | **Env**        | 零依赖 `.env` 配置加载器                                                                        | ✅   |
 
 
@@ -486,6 +523,7 @@ harness9/
 | [Sandbox 沙箱系统](docs/核心功能/sandbox.md)                               | Docker 容器级隔离、Environment 接口、五状态生命周期、安全加固参数、TUI SandboxBar、孤儿回收 |
 | [测试·评估·可观测体系](docs/核心功能/eval.md)                 | Test/Eval/Observability 完整体系：ScriptedProvider、黄金数据集（16 用例）、CI Quality Gate、OTEL 链路追踪、Langfuse 接入指南 |
 | [网页搜索与抓取技术方案](docs/核心功能/web_search.md)           | web_search/web_fetch 工具、SSRF 防护（isSafeURL）、HTML→Markdown 管线、DuckDuckGo 后端、当前日期注入 |
+| [AutoDev 自举开发技术方案](docs/核心功能/autodev.md)            | /autodev 命令三阶段流程、dev sub-agent 设计、git worktree 隔离、Docker Sandbox 集成、使用指南 |
 | [AGENTS.md](AGENTS.md)                                       | 项目开发规范、编码标准、架构决策                                        |
 
 
