@@ -134,6 +134,41 @@ func (c *SummarizationCompactor) Compact(msgs []schema.Message) []schema.Message
 		return c.fallback().Compact(msgs)
 	}
 
+	return c.buildCompactedResult(msgs[0], summary, tail)
+}
+
+// CompactForce 强制压缩，跳过 token 预算阈值检查，总是尝试 LLM 摘要。
+// 用于手动触发的 /compact 命令：无论当前 token 用量多少，都执行摘要压缩。
+// 与 Compact 的区别：minTail 固定为 1，允许在消息数量很少时也能压缩（只保留最新 1 条）。
+func (c *SummarizationCompactor) CompactForce(msgs []schema.Message) []schema.Message {
+	if len(msgs) == 0 || msgs[0].Role != schema.RoleSystem {
+		return msgs
+	}
+	const forceMinTail = 1 // 强制压缩时只保留最近 1 条消息作为 tail
+	rest := msgs[1:]
+	if len(rest) <= forceMinTail {
+		return msgs // 只有 system + 1 条消息，无可摘要的头部
+	}
+	headEnd := len(rest) - forceMinTail
+	head := rest[:headEnd]
+	tail := rest[headEnd:]
+	if c.extractor != nil {
+		c.extractor.Extract(head)
+	}
+	summary, err := c.summarize(head)
+	if err != nil {
+		// 摘要失败时回退到 TokenBudgetCompactor 的强制压缩
+		if fb, ok := c.fallback().(ForceCompactor); ok {
+			return fb.CompactForce(msgs)
+		}
+		return c.fallback().Compact(msgs)
+	}
+	return c.buildCompactedResult(msgs[0], summary, tail)
+}
+
+// buildCompactedResult 将 system 消息、LLM 摘要文本和尾部消息组合为压缩后的消息列表。
+// Compact 和 CompactForce 共用此方法，避免重复拼装逻辑。
+func (c *SummarizationCompactor) buildCompactedResult(systemMsg schema.Message, summary string, tail []schema.Message) []schema.Message {
 	summaryContent := summaryMarker + "\n" + summary
 	if c.TodoInjector != nil {
 		if todoText := c.TodoInjector.FormatForInjection(); todoText != "" {
@@ -144,12 +179,10 @@ func (c *SummarizationCompactor) Compact(msgs []schema.Message) []schema.Message
 		Role:    schema.RoleUser,
 		Content: summaryContent,
 	}
-
 	result := make([]schema.Message, 0, 2+len(tail))
-	result = append(result, msgs[0])    // system 始终保留
+	result = append(result, systemMsg)  // system 始终保留
 	result = append(result, summaryMsg) // LLM 生成的摘要
 	result = append(result, tail...)    // 最近消息原样保留
-
 	return repairOrphanedToolPairs(result)
 }
 

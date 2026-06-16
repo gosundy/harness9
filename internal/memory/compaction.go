@@ -11,6 +11,13 @@ type Compactor interface {
 	Compact(msgs []schema.Message) []schema.Message
 }
 
+// ForceCompactor 扩展 Compactor，提供跳过 token 阈值检查的强制压缩能力。
+// 由 engine.Compact（/compact 手动命令）使用，强制执行压缩而不受 80% 阈值约束。
+type ForceCompactor interface {
+	Compactor
+	CompactForce(msgs []schema.Message) []schema.Message
+}
+
 // SlidingWindowCompactor 保留最近 MaxMessages 条消息（System Prompt 固定在首位）。
 // MaxMessages 含 system 消息本身；0 或负数时使用默认值 100。
 type SlidingWindowCompactor struct {
@@ -111,6 +118,29 @@ func (c *TokenBudgetCompactor) Compact(msgs []schema.Message) []schema.Message {
 	}
 
 	// 头部完全移除：仅保留 system 消息 + 尾部最近消息。
+	result := make([]schema.Message, 0, 1+len(tail))
+	result = append(result, msgs[0])
+	result = append(result, tail...)
+	return repairOrphanedToolPairs(result)
+}
+
+// CompactForce 强制压缩，跳过 token 预算阈值检查，直接移除最旧的非 system 消息。
+// 用于手动触发的 /compact 命令：无论当前 token 用量多少，都执行一次结构裁剪。
+// 与 Compact 的区别：minTail 固定为 1，允许在消息数量很少时也能压缩。
+//
+// 注意：此方法不做 LLM 摘要，直接丢弃旧消息，仅保留 system + 最新 1 条；
+// 通常作为 SummarizationCompactor.CompactForce 摘要失败时的 fallback。
+func (c *TokenBudgetCompactor) CompactForce(msgs []schema.Message) []schema.Message {
+	if len(msgs) == 0 || msgs[0].Role != schema.RoleSystem {
+		return msgs
+	}
+	const forceMinTail = 1
+	rest := msgs[1:]
+	if len(rest) <= forceMinTail {
+		return msgs // 只有 system + 1 条消息，无可裁剪的头部
+	}
+	// 直接移除中间最旧的非 system 消息，只保留 system + 最近 1 条。
+	tail := rest[len(rest)-forceMinTail:]
 	result := make([]schema.Message, 0, 1+len(tail))
 	result = append(result, msgs[0])
 	result = append(result, tail...)

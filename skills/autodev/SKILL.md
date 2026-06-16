@@ -1,6 +1,6 @@
 ---
 name: autodev
-description: Feature auto-development — clarify requirements, generate spec, dispatch dev sub-agent to implement and create PR
+description: Feature auto-development — clarify requirements, generate spec, dispatch dev sub-agent to implement and merge into current branch
 trigger: /autodev, autodev
 ---
 
@@ -72,11 +72,6 @@ go version
 ```
 
 ```bash
-# 检查 gh CLI 已安装并登录
-gh auth status
-```
-
-```bash
 # 检查 git 可用
 git --version
 ```
@@ -112,9 +107,23 @@ task("dev", "以下是需要实现的 Feature Spec：\n\n<spec 全文>\n\n工作
 
 ### 3.4 处理结果
 
-**成功（sub-agent 返回 PR URL）：**
-1. 在 TUI 中展示：「✓ PR 已创建：<URL>」
+**成功（sub-agent 返回 `AUTODEV_RESULT: SUCCESS`）：**
+
+从 sub-agent 返回结果中提取 `BRANCH: <branch-name>`，然后执行合并：
+
+```bash
+# 将 feature 分支合并到当前分支
+git merge feature/autodev-<slug>
+```
+
+若合并成功：
+1. 展示：「✓ 已合并到当前分支：feature/autodev-<slug>」
 2. 清理 worktree：`git worktree remove .autodev/<slug>`
+
+若合并产生冲突：
+1. 展示冲突文件列表
+2. 保留 worktree：「存在合并冲突，worktree 保留在 .autodev/<slug>，请手动解决冲突」
+3. 告知用户解决后执行：`git worktree remove .autodev/<slug> --force`
 
 **失败（sub-agent 报告无法通过测试）：**
 1. 展示错误摘要
