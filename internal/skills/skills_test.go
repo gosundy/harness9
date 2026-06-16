@@ -76,13 +76,6 @@ func TestParseFrontmatter_NoTrigger(t *testing.T) {
 	}
 }
 
-// 以下变量仅为让编译器不报错（后续任务会用到这些导入）
-var _ = context.Background
-var _ = json.RawMessage(nil)
-var _ = os.TempDir
-var _ = filepath.Join
-var _ = strings.Contains
-
 // --- Index tests ---
 
 func TestIndex_IsEmpty(t *testing.T) {
@@ -114,6 +107,40 @@ func TestIndex_Summary_WithSkills(t *testing.T) {
 	}
 	if !strings.Contains(got, "skill-b: Desc B") {
 		t.Errorf("summary missing skill-b entry: %q", got)
+	}
+}
+
+func TestIndex_Names(t *testing.T) {
+	// 空 Index 应返回空切片（非 nil）
+	empty := &Index{}
+	names := empty.Names()
+	if len(names) != 0 {
+		t.Errorf("empty Index.Names(): want empty, got %v", names)
+	}
+
+	// 非空 Index 应按插入顺序返回所有技能名称
+	idx := &Index{skills: []Skill{
+		{Name: "skill-b", Description: "B"},
+		{Name: "skill-a", Description: "A"},
+	}}
+	got := idx.Names()
+	if len(got) != 2 {
+		t.Fatalf("Names(): want 2 names, got %d", len(got))
+	}
+	if got[0] != "skill-b" || got[1] != "skill-a" {
+		t.Errorf("Names(): got %v, want [skill-b skill-a]", got)
+	}
+}
+
+func TestIndex_GetFullContent_FileMissing(t *testing.T) {
+	// skill 在 Index 中存在，但对应文件已被删除 → 应返回错误
+	idx := &Index{skills: []Skill{{Name: "ghost", Description: "Ghost", filePath: "/nonexistent/path/SKILL.md"}}}
+	_, err := idx.GetFullContent("ghost")
+	if err == nil {
+		t.Fatal("expected error when skill file is missing on disk")
+	}
+	if !strings.Contains(err.Error(), "ghost") {
+		t.Errorf("error should mention skill name: %v", err)
 	}
 }
 

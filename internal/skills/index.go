@@ -49,7 +49,9 @@ func (idx *Index) GetFullContent(name string) (string, error) {
 	return "", fmt.Errorf("skill %q 不存在，可用技能: %s", name, idx.availableNames())
 }
 
-// Names 返回所有已加载技能的名称列表，供 TUI Tab 补全使用。
+// Names 返回所有已加载技能的名称列表，按 LoadSkills 扫描时的目录顺序排列。
+// 主要用途：TUI Tab 补全（`/skill-name` 输入时枚举候选项）。
+// 每次调用返回新切片，调用方可安全修改（不影响 Index 内部状态）。
 func (idx *Index) Names() []string {
 	names := make([]string, len(idx.skills))
 	for i, s := range idx.skills {

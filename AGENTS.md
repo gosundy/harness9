@@ -180,11 +180,15 @@ harness9/
 │   ├── engine/                      # Agent 核心引擎 — 标准 ReAct 主循环
 │   │   ├── agent_loop.go            # 共享 runLoop 主循环内核 + 阻塞式 Run
 │   │   ├── agent_loop_test.go       # 主循环单元测试
+│   │   ├── compact.go               # Compact 方法：TUI /compact 命令触发的手动强制压缩
 │   │   ├── observer.go              # EngineObserver 接口 + noopObserver（可观测层无侵入接入点）
+│   │   ├── permission.go            # PermissionMode 枚举（Default/AutoApprove/ReadOnly/BypassAll）+ WithPermissionMode
 │   │   ├── stream.go                # 流式入口 RunStream + engine.Event 事件类型 + ToolResultData
 │   │   └── stream_test.go           # 流式接口单元测试
 │   ├── hooks/                       # 工具拦截器（Hooks）— 文件系统能力
-│   │   ├── hook.go                  # ToolHook 接口 + HookRegistry（洋葱模型）
+│   │   ├── hook.go                  # ToolHook 接口 + HookRegistry（洋葱模型）+ ApprovalFunc context 工具
+│   │   ├── decision.go              # HookDecision 结构体 + Allow/Deny/Ask 三种决策构造函数
+│   │   ├── danger_hook.go           # DangerHook：19 条高危 bash 模式检测（高/中风险两级 Ask）
 │   │   ├── offload.go               # OffloadHook：超大工具输出自动写入文件系统
 │   │   ├── plan_writer.go           # FilePlanWriter：todo 计划持久化到 markdown
 │   │   ├── hook_test.go             # HookRegistry 单元测试
@@ -202,6 +206,12 @@ harness9/
 │   │   ├── runner.go                # Runner：构建隔离子引擎 + RunStream + 桥接审批与进度
 │   │   ├── task_tool.go             # TaskTool：主代理委派入口（task 工具，前台/后台）
 │   │   └── *_test.go                # 各组件单元测试
+│   ├── skills/                      # Agent Skills — Progressive Disclosure 技能系统
+│   │   ├── skill.go                 # Skill 结构体 + parseFrontmatter（YAML frontmatter 解析）
+│   │   ├── index.go                 # Index：已加载 skill 集合 + Summary/GetFullContent/Names
+│   │   ├── loader.go                # LoadSkills：扫描 skills/<name>/SKILL.md → Index
+│   │   ├── use_skill_tool.go        # UseSkillTool：use_skill 工具（按需加载 skill 全文）
+│   │   └── skills_test.go           # 全组件单元测试（parseFrontmatter/Index/LoadSkills/UseSkillTool）
 │   ├── planning/                    # Planning 模块 — Plan Mode + 任务列表
 │   │   ├── mode.go                  # PlanMode 枚举（Default/Plan/AutoEdit）+ Next()/Label()
 │   │   ├── mode_test.go             # PlanMode 单元测试
@@ -215,6 +225,7 @@ harness9/
 │   │   ├── mem_session.go           # MemorySession：纯内存实现（测试用）
 │   │   ├── compaction.go            # Compactor 接口 + TokenBudgetCompactor + SlidingWindowCompactor
 │   │   ├── summarization.go         # SummarizationCompactor：LLM 摘要压缩 + Summarizer 接口 + 增量更新；MemoryExtractor 接口 + WithMemoryExtractor
+│   │   ├── token.go                 # EstimateTokens/EstimateToolTokens（字符数÷4 估算）+ FormatTokenCount
 │   │   ├── sqlite_session_test.go   # SQLiteSession 集成测试
 │   │   ├── mem_session_test.go      # MemorySession 单元测试
 │   │   ├── manager_test.go          # Manager 单元测试
@@ -293,6 +304,8 @@ harness9/
 │   │       ├── memory_test.go       # Memory 持久化（2 用例：memory_write/memory_search）
 │   │       ├── context_test.go      # Context Engineering（3 用例：多步工具链/多轮对话/工具错误观察）
 │   │       └── error_handling_test.go # Error Handling（3 用例：工具失败降级/写入失败停止/MaxTurns 保护）
+│   ├── context/                     # Context Engineering — System Prompt 组装
+│   │   └── builder.go               # DefaultPromptBuilder：基础 prompt + AGENTS.md + Skills 索引 + todo/offload/Sandbox/LTM 段落
 │   ├── env/                         # 环境配置
 │   │   ├── env.go                   # 零依赖 .env 文件加载器（系统变量优先）
 │   │   └── env_test.go              # 配置加载单元测试
@@ -383,6 +396,7 @@ harness9/
 | **hooks** | 文件系统能力：ToolHook 接口 + HookRegistry（洋葱模型）；OffloadHook（超大输出 offload 到 `~/.harness9/tool_results/`，fail-open）；FilePlanWriter（todo 计划持久化为 markdown，git 项目写入 workDir/.harness9/plans/） | ✅ |
 | **planning** | PlanMode 枚举（Default/Plan/AutoEdit）、PlanWriter 接口（解耦 TodoWriteTool 与 FilePlanWriter）、TodoStore（线程安全，全量替换）、TodoItem 状态机、todo_write 工具（状态转换校验 + WithPlanWriter 注入） | ✅ |
 | **subagent** | Sub-Agent 子代理委派：SubAgentDefinition（ResolveTools 白名单∩全集-黑名单-task）、Registry（编程式 + `.harness9/agents/*.md` 文件式定义）、Runner（构建隔离子引擎 + RunStream + 桥接审批与进度）、TaskTool（task 工具，前台/后台双模式）、TaskTracker（后台任务单一事实源）；内置 general-purpose 通用子代理（继承父全部可用工具与模型）；防递归 + 权限不扩权 + 上下文隔离 | ✅ |
+| **skills** | Progressive Disclosure 技能系统：`Skill` 结构体（YAML frontmatter 解析）、`Index`（技能集合 + Summary/GetFullContent/Names）、`LoadSkills`（扫描 `skills/<name>/SKILL.md` → Index，目录不存在静默跳过）、`UseSkillTool`（`use_skill` 工具，LLM 按需按名称加载 skill 全文，避免启动时整体注入 context）；结构类型隐式满足 `tools.BaseTool` 接口，无循环依赖 | ✅ |
 | **memory** | Context Engineering：Session 接口、Manager（SQLite CRUD + WithToolResultsDir + DeleteSession 级联 GC + DB() 访问器）、SQLiteSession（WAL + 事务）、SummarizationCompactor（默认，LLM 摘要压缩 + 增量更新 + 错误回退）、TokenBudgetCompactor（回退，80% 阈值 + 孤立工具对双向修复）、SlidingWindowCompactor（回退方案）、token 估算工具；MemoryExtractor 接口 + WithMemoryExtractor（压缩前提取钩子） | ✅ |
 | **ltm** | Long-Term Memory：Store（`long_term_memories` 表 + standalone FTS5 `memories_fts`，复用 `state.db`，Add 签名去重 / Search FTS5 强化 / SoftDelete signature=NULL / List top-N / PurgeExpired / StaleCandidates）、Precis（MEMORY.md 物化视图，top-30 渲染 + 5KB 截断）、Extractor（LLM 压缩前事实提取，fail-open，实现 MemoryExtractor 接口）、Phase 3 接缝（Provider/Embedder/Consolidator + noopProvider） | ✅ |
 | **context** | DefaultPromptBuilder：System Prompt 结构化组装（基础 prompt + AGENTS.md + Skills 索引 + todo 指引 + offload 检索指引 + 长期记忆精华），WithOffloadEnabled 注入分页检索说明，WithLongTermMemory 接收读取闭包、每轮 Build 时实时重读 MEMORY.md 精华注入（写入即下一轮可见）；**每次 Build() 注入 `当前日期：YYYY-MM-DD`**（`time.Now()` 实时生成，防止 Agent 因训练截止日期偏差产生陈旧搜索词） | ✅ |

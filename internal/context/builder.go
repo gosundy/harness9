@@ -130,7 +130,7 @@ func (b *DefaultPromptBuilder) Build() string {
 		)
 	}
 
-	// 5a. Sandbox 执行环境提示（仅在启用 Sandbox 时注入，与 Offload 提示平级）
+	// 5b. Sandbox 执行环境提示（仅在启用 Sandbox 时注入，与 Offload 提示平级）
 	if b.sandboxEnabled {
 		parts = append(parts,
 			"## Sandbox 执行环境\n\n"+

@@ -101,8 +101,13 @@ func (t *TaskTool) Execute(ctx context.Context, args json.RawMessage) (string, e
 					t.tracker.Finish(taskID, fmt.Sprintf("子代理后台执行 panic: %v", rec), true)
 				}
 			}()
-			// 关键安全点：从 context.Background() 构造 bgCtx，只注入"写 tracker"的 sink，
-			// 绝不复用父 ctx 的 progress sink（其 channel 会在父 turn 结束后关闭，写入即 panic）。
+			// 关键安全点 1：从 context.Background() 构造 bgCtx，而非复用 t.runner.baseCtx。
+			// 背景：后台子代理的生命周期可能超过整个会话（用户退出 TUI 后仍在运行）。
+			// 若用 baseCtx，用户 Ctrl+C 会取消 baseCtx 进而强制中止后台子代理；
+			// context.Background() 使后台任务完全独立，持久到自然结束。
+			//
+			// 关键安全点 2：只注入"写 tracker"的 sink，绝不复用父 ctx 的 progress sink
+			// （其 channel 会在父 turn 结束后关闭，写入即 panic / goroutine 阻塞）。
 			sink := func(u schema.SubAgentUpdate) { t.tracker.AppendLog(taskID, u) }
 			bgCtx := hooks.WithSubAgentProgress(context.Background(), sink)
 			res, err := t.runner.Run(bgCtx, def, a.Prompt, true)
