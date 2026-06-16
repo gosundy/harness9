@@ -25,6 +25,9 @@ reports/
 # 本地临时目录
 tmp/
 
+# autodev：git worktree 临时工作区（/autodev 命令生成）
+.autodev/
+
 # VitePress 网站依赖与构建产物
 website/node_modules/
 website/.vitepress/dist/
