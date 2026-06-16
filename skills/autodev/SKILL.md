@@ -51,7 +51,7 @@ trigger: /autodev, autodev
 - <明确列出不做的事>
 ```
 
-展示完成后，输出以下提示，然后**停止等待用户响应**：
+展示完成后，输出以下提示，**不要调用任何工具，直接结束本轮回复**（TUI 会自动等待用户输入）：
 
 > **请确认 spec（输入「确认」继续实现），或告知需要修改的地方。**
 
@@ -65,6 +65,11 @@ trigger: /autodev, autodev
 ### 3.1 前置检查
 
 依次用 bash 执行以下检查，任一失败则停下来告知用户并等待修复：
+
+```bash
+# 检查 Go 已安装（项目要求 1.25+）
+go version
+```
 
 ```bash
 # 检查 gh CLI 已安装并登录
@@ -85,7 +90,8 @@ echo "SANDBOX_IMAGE=${SANDBOX_IMAGE:-未设置}"
 
 ### 3.2 创建 git worktree
 
-从 spec 标题生成 slug（全小写，空格替换为 `-`，去掉特殊字符），然后执行：
+从 spec 标题生成 slug（全小写，空格替换为 `-`，去掉非 ASCII 字母数字字符），然后执行：
+示例：`"Add WebSocket 支持"` → `"add-websocket-"`（中文字符去掉）→ 可简化为 `"add-websocket-support"`
 
 ```bash
 git worktree add .autodev/<slug> -b feature/autodev-<slug>
