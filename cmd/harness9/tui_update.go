@@ -92,6 +92,7 @@ var builtinCmds = []struct {
 	{"plan", "进入规划模式分析任务"},
 	{"compact", "手动压缩上下文"},
 	{"tasks", "查看后台子代理任务"},
+	{"mcp", "查看 MCP 工具列表并编辑配置"},
 	{"exit", "退出 TUI"},
 }
 
