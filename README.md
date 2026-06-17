@@ -376,6 +376,35 @@ echo "SANDBOX_ENABLED=false" >> .env
 
 详见 [AutoDev 自举开发技术方案](docs/核心功能/autodev.md)。
 
+### MCP 工具集成（Model Context Protocol）
+
+harness9 支持通过 MCP 协议连接外部工具服务器，将第三方工具无缝注入 Agent 工具注册表：
+
+```
+[MCP] context7 ● 2 tools
+```
+
+在项目根目录创建 `.mcp.json` 即可接入任意 MCP Server：
+
+```json
+{
+  "mcpServers": {
+    "context7": {
+      "command": "npx",
+      "args": ["-y", "@upstash/context7-mcp"]
+    }
+  }
+}
+```
+
+- **零侵入集成**：MCP 工具以 `mcp__{server}__{tool}` 格式注册到统一工具注册表，对 Engine 完全透明，自动获得并发执行、超时控制、错误回传等所有现有机制
+- **异步冷启动**：MCP Server 在 TUI 启动后于后台异步连接，不阻塞用户交互；`npx` 类需要下载的 Server 也不会卡住启动流程
+- **双传输支持**：`stdio`（子进程 stdin/stdout NDJSON，async reader goroutine + pending map ID 关联）+ `http`（无状态 POST）
+- **TUI MCPBar**：StatusBar 下方实时展示所有 MCP Server 连接状态与工具数（绿=已连接、黄=连接中、红=失败）
+- **`/mcp` 命令**：Tab 补全可用，打开模态工具面板查看所有已连接工具；按 `e` 用 `$EDITOR` 或系统关联程序打开 `.mcp.json` 编辑配置
+
+详见 [MCP 工具集成技术方案](docs/核心功能/mcp.md)。
+
 ### 网页搜索与抓取（`web_search` + `web_fetch`）
 
 Agent 可直接搜索互联网并抓取页面内容，无需任何 API Key 或外部账号：
@@ -462,6 +491,7 @@ for evt := range stream {
 | **Sandbox**    | Docker 容器级隔离：OS 级进程沙箱（cap-drop/no-new-privileges）、Agent 级独立容器、bind mount 工具透明路由、TUI SandboxBar、孤儿容器回收；默认开启；`SANDBOX_ENABLED=false` 关闭 | ✅   |
 | **Observability** | OpenTelemetry 链路追踪：`OTELEngineObserver`（Interaction/Turn Span）+ `TracingProvider`（LLM Span + Token Metrics）+ `ObservabilityHook`（Tool Span）；默认 noop 零开销；支持接入 Langfuse / Grafana / Jaeger | ✅   |
 | **Evals**      | 自动化评估框架：`ScriptedProvider`（确定性 mock）+ `Assertion`（Hard/Soft 断言）+ `EvalHarness`（RunCase/Suite）+ `SetupHermeticEnv` + `BuildReport`（JSON/Markdown）；16 个黄金数据集用例；CI Quality Gate | ✅   |
+| **MCP**        | MCP Client 集成：`internal/mcp/`（Config/StdioTransport/HTTPTransport/Client/Manager）+ MCPToolAdapter（`mcp__{server}__{tool}` 命名，BaseTool 接口）+ TUI MCPBar + `/mcp` 工具面板（e 键编辑配置）；异步启动，fail-soft，session 级生命周期 | ✅   |
 | **AutoDev**    | 自举开发闭环：`/autodev` AgentSkill（需求澄清→Spec 生成→确认关卡）+ dev sub-agent（`.harness9/agents/dev.md`，git worktree + Docker Sandbox）；零新 Go 代码，复用 Skills/Sub-Agent/Sandbox 基础设施 | ✅   |
 | **Env**        | 零依赖 `.env` 配置加载器                                                                        | ✅   |
 
@@ -490,6 +520,7 @@ harness9/
 │   ├── provider/            # OpenAI / Anthropic 适配器 + 模型限制注册表
 │   ├── schema/              # 共享数据类型（Message、StreamChunk、Usage）
 │   ├── tools/               # 工具注册表 + 内置工具（read_file 支持 offset/limit）+ 路径沙箱
+│   ├── mcp/                 # MCP Client 集成（Config/Transport/Client/Manager + MCPToolAdapter）
 │   ├── context/             # System Prompt 组装（DefaultPromptBuilder + WithOffloadEnabled）
 │   ├── skills/              # Skills 解析、索引、use_skill 工具
 │   ├── env/                 # 零依赖 .env 加载器
@@ -523,6 +554,7 @@ harness9/
 | [Sandbox 沙箱系统](docs/核心功能/sandbox.md)                               | Docker 容器级隔离、Environment 接口、五状态生命周期、安全加固参数、TUI SandboxBar、孤儿回收 |
 | [测试·评估·可观测体系](docs/核心功能/eval.md)                 | Test/Eval/Observability 完整体系：ScriptedProvider、黄金数据集（16 用例）、CI Quality Gate、OTEL 链路追踪、Langfuse 接入指南 |
 | [网页搜索与抓取技术方案](docs/核心功能/web_search.md)           | web_search/web_fetch 工具、SSRF 防护（isSafeURL）、HTML→Markdown 管线、DuckDuckGo 后端、当前日期注入 |
+| [MCP 工具集成技术方案](docs/核心功能/mcp.md)                    | JSON-RPC 2.0 协议、StdioTransport 异步设计、Manager 生命周期、MCPToolAdapter、TUI 集成、.mcp.json 配置 |
 | [AutoDev 自举开发技术方案](docs/核心功能/autodev.md)            | /autodev 命令三阶段流程、dev sub-agent 设计、git worktree 隔离、Docker Sandbox 集成、使用指南 |
 | [AGENTS.md](AGENTS.md)                                       | 项目开发规范、编码标准、架构决策                                        |
 
