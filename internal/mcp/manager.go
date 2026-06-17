@@ -5,10 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
-	"strings"
 	"sync"
 	"time"
-	"unicode"
 
 	"github.com/harness9/internal/logfmt"
 	"github.com/harness9/internal/tools"
@@ -96,7 +94,7 @@ func (m *Manager) Start(ctx context.Context) error {
 			toolDetails := make([]ToolDetail, 0, len(client.Tools))
 			for _, t := range client.Tools {
 				toolDetails = append(toolDetails, ToolDetail{
-					AdapterName: "mcp__" + sanitizeName(name) + "__" + sanitizeName(t.Name),
+					AdapterName: "mcp__" + tools.SanitizeMCPName(name) + "__" + tools.SanitizeMCPName(t.Name),
 					Description: t.Description,
 				})
 			}
@@ -211,17 +209,4 @@ func (m *Manager) sendNotify() {
 	}
 	statuses := m.Statuses()
 	m.notify(statuses)
-}
-
-// sanitizeName 将工具/服务器名中的非字母数字字符替换为下划线，与 tools.sanitizeMCPName 保持同逻辑。
-func sanitizeName(s string) string {
-	var sb strings.Builder
-	for _, r := range s {
-		if unicode.IsLetter(r) || unicode.IsDigit(r) || r == '_' {
-			sb.WriteRune(r)
-		} else {
-			sb.WriteRune('_')
-		}
-	}
-	return sb.String()
 }

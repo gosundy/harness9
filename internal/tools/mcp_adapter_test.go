@@ -75,8 +75,8 @@ func TestSanitizeMCPName(t *testing.T) {
 		{"a b c", "a_b_c"},
 	}
 	for _, tc := range tests {
-		if got := sanitizeMCPName(tc.in); got != tc.want {
-			t.Errorf("sanitizeMCPName(%q) = %q, want %q", tc.in, got, tc.want)
+		if got := SanitizeMCPName(tc.in); got != tc.want {
+			t.Errorf("SanitizeMCPName(%q) = %q, want %q", tc.in, got, tc.want)
 		}
 	}
 }

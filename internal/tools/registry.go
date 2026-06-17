@@ -12,6 +12,7 @@ package tools
 import (
 	"context"
 	"fmt"
+	"sync"
 
 	"github.com/harness9/internal/schema"
 )
@@ -36,8 +37,10 @@ type Registry interface {
 
 // registryImpl 是 Registry 接口的默认实现，使用 map 存储工具实例。
 // 工具名称作为键，确保查找的时间复杂度为 O(1)。
+// mu 保护 tools map，使 Register（写）与 GetAvailableTools/Execute（读）
+// 可在不同 goroutine 并发调用——MCP 工具注入（后台 goroutine）与 Engine 主循环共存的必要保障。
 type registryImpl struct {
-	// tools 以工具名称为键的映射表，存储所有已注册的 BaseTool 实现。
+	mu    sync.RWMutex
 	tools map[string]BaseTool
 }
 
@@ -52,6 +55,8 @@ func NewRegistry() Registry {
 // 同名工具已存在时返回 error 且保留原实现，由调用方决定如何处理冲突
 // （静默忽略、终止启动、或先 unregister 再注册）。
 func (r *registryImpl) Register(tool BaseTool) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	name := tool.Name()
 	if _, exists := r.tools[name]; exists {
 		return fmt.Errorf("tool %q already registered", name)
@@ -63,6 +68,8 @@ func (r *registryImpl) Register(tool BaseTool) error {
 // GetAvailableTools 遍历注册表，收集所有工具的 ToolDefinition 并返回。
 // 返回的列表顺序不固定（map 迭代顺序不确定）。
 func (r *registryImpl) GetAvailableTools() []schema.ToolDefinition {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
 	defs := make([]schema.ToolDefinition, 0, len(r.tools))
 	for _, tool := range r.tools {
 		defs = append(defs, tool.Definition())
@@ -74,7 +81,9 @@ func (r *registryImpl) GetAvailableTools() []schema.ToolDefinition {
 // 工具执行失败时，错误会被捕获并封装为 IsError=true 的 ToolResult，
 // 使引擎能够将错误信息作为 Observation 回传给 LLM，支持自愈（Self-Healing）重试。
 func (r *registryImpl) Execute(ctx context.Context, call schema.ToolCall) schema.ToolResult {
+	r.mu.RLock()
 	tool, exists := r.tools[call.Name]
+	r.mu.RUnlock()
 	if !exists {
 		errMsg := fmt.Sprintf("Error: 系统中不存在名为 '%s' 的工具。", call.Name)
 		return schema.ToolResult{

@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 )
 
 // Transport 抽象了与 MCP Server 的底层消息通道。
@@ -55,9 +56,10 @@ type StdioTransport struct {
 	args    []string
 	env     []string // 格式: ["KEY=VALUE", ...]
 
-	cmd  *exec.Cmd
-	enc  *json.Encoder // 写入 stdin（由 writeMu 保护）
-	scan *bufio.Scanner
+	cmd     *exec.Cmd
+	enc     *json.Encoder // 写入 stdin（由 writeMu 保护）
+	scan    *bufio.Scanner
+	loopRun bool // readLoop goroutine 是否已启动（Close 据此决定是否等待 done）
 
 	writeMu sync.Mutex
 	nextID  atomic.Int64
@@ -103,6 +105,7 @@ func (t *StdioTransport) Start(ctx context.Context) error {
 	t.scan = bufio.NewScanner(stdout)
 	t.scan.Buffer(make([]byte, 1024*1024), 1024*1024) // 1MB 缓冲，适应大工具列表响应
 
+	t.loopRun = true
 	go t.readLoop()
 	return nil
 }
@@ -193,12 +196,15 @@ func (t *StdioTransport) Notify(method string, params json.RawMessage) error {
 }
 
 // Close 终止子进程并等待 readLoop goroutine 退出。
+// 若 Start() 在启动 readLoop 前失败（loopRun == false），跳过 <-t.done 以避免永久阻塞。
 func (t *StdioTransport) Close() error {
 	if t.cmd != nil && t.cmd.Process != nil {
 		_ = t.cmd.Process.Kill()
 		_ = t.cmd.Wait()
 	}
-	<-t.done
+	if t.loopRun {
+		<-t.done
+	}
 	return nil
 }
 
@@ -257,14 +263,17 @@ func (t *HTTPTransport) Send(ctx context.Context, method string, params json.Raw
 	return rpcResp.Result, nil
 }
 
-// Notify 通过 HTTP POST 发送 JSON-RPC 通知（忽略响应体）。
+// Notify 通过 HTTP POST 发送 JSON-RPC 通知（fire-and-forget，忽略响应体）。
+// 使用 5s 超时避免服务器不可达时无限阻塞。
 func (t *HTTPTransport) Notify(method string, params json.RawMessage) error {
 	req := rpcRequest{JSONRPC: "2.0", Method: method, Params: params}
 	body, err := json.Marshal(req)
 	if err != nil {
 		return err
 	}
-	httpReq, err := http.NewRequest(http.MethodPost, t.url, strings.NewReader(string(body)))
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, t.url, strings.NewReader(string(body)))
 	if err != nil {
 		return err
 	}

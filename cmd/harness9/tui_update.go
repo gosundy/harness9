@@ -1879,14 +1879,33 @@ func (m tuiModel) writeApprovalToConfig(req *engine.ApprovalRequest) {
 	_ = permission.SaveRules(m.settingsPath, rules)
 }
 
+// mcpPanelLineCount 计算 renderMCPPanel 会生成的总行数，用于滚动上界控制。
+func (m tuiModel) mcpPanelLineCount() int {
+	count := 0
+	for _, s := range m.mcpServers {
+		count++ // 服务器 header 行
+		if s.Status == mcppkg.StatusConnected {
+			count += len(s.ToolDetails) * 2 // 工具名 + 描述各一行
+		} else if s.ErrMsg != "" {
+			count++ // 错误信息行
+		}
+		count++ // 空行分隔
+	}
+	return count
+}
+
 // handleMCPPanelKey 处理 MCP 工具面板（模态）的键盘输入。
 //
 //   - Esc    → 关闭面板，返回对话视图
 //   - e / E  → 暂停 TUI，打开 .mcp.json 配置文件（$EDITOR 或系统关联程序）
 //   - ↑ / k  → 向上滚动工具列表
-//   - ↓ / j  → 向下滚动工具列表
+//   - ↓ / j  → 向下滚动工具列表（夹住在内容末尾）
 //   - Ctrl+C → 退出程序
 func (m tuiModel) handleMCPPanelKey(msg tea.KeyMsg) (tuiModel, tea.Cmd) {
+	maxScroll := m.mcpPanelLineCount()
+	if maxScroll > 0 {
+		maxScroll-- // 最多滚到最后一行可见
+	}
 	switch msg.Type {
 	case tea.KeyEsc:
 		m.mcpPanelMode = false
@@ -1896,7 +1915,9 @@ func (m tuiModel) handleMCPPanelKey(msg tea.KeyMsg) (tuiModel, tea.Cmd) {
 			m.mcpPanelScroll--
 		}
 	case tea.KeyDown:
-		m.mcpPanelScroll++
+		if m.mcpPanelScroll < maxScroll {
+			m.mcpPanelScroll++
+		}
 	case tea.KeyCtrlC:
 		return m, tea.Quit
 	case tea.KeyRunes:
@@ -1906,7 +1927,9 @@ func (m tuiModel) handleMCPPanelKey(msg tea.KeyMsg) (tuiModel, tea.Cmd) {
 				m.mcpPanelScroll--
 			}
 		case "j":
-			m.mcpPanelScroll++
+			if m.mcpPanelScroll < maxScroll {
+				m.mcpPanelScroll++
+			}
 		case "e", "E":
 			return m, openMCPConfigCmd(m.mcpConfigPath)
 		}
