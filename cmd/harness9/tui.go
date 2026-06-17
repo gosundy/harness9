@@ -315,6 +315,11 @@ type tuiModel struct {
 	// MCP 状态展示（MCPBar）
 	mcpServers []mcppkg.ServerStatus        // 当前所有 MCP Server 状态快照
 	mcpCh      <-chan []mcppkg.ServerStatus // Manager 状态变更通知 channel（nil = 无 MCP）
+
+	// MCP 工具面板（模态）：/mcp 命令打开，展示服务器 + 工具列表，支持编辑配置。
+	mcpPanelMode   bool   // 面板是否激活
+	mcpPanelScroll int    // 工具列表滚动偏移
+	mcpConfigPath  string // .mcp.json 绝对路径（用于编辑器打开）
 }
 
 // pendingToolInfo 记录单个并发工具调用的启动信息，用于 EventToolResult 时精确还原名称和参数。
@@ -357,6 +362,7 @@ func newTUIModel(eng *engine.AgentEngine, idx *skills.Index, mgr *memory.Manager
 		subAgentRunner:    runner,
 		sandboxCh:         sandboxCh,
 		mcpCh:             mcpCh,
+		mcpConfigPath:     filepath.Join(workDir, ".mcp.json"),
 	}
 	if sess != nil {
 		m.sessionID = sess.SessionID()

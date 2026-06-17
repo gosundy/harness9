@@ -22,6 +22,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -134,6 +135,27 @@ type subAgentDirectMsg struct {
 	err    error
 }
 
+// mcpEditorDoneMsg 在用户关闭 MCP 配置编辑器后投递（tea.ExecProcess 回调）。
+type mcpEditorDoneMsg struct{ err error }
+
+// openMCPConfigCmd 暂停 TUI 并打开 .mcp.json 配置文件供用户手动编辑。
+// 优先使用 $EDITOR（终端编辑器，TUI 挂起等待退出），否则使用系统关联程序打开（后台）。
+func openMCPConfigCmd(path string) tea.Cmd {
+	editor := os.Getenv("EDITOR")
+	if editor != "" {
+		return tea.ExecProcess(exec.Command(editor, path), func(err error) tea.Msg {
+			return mcpEditorDoneMsg{err: err}
+		})
+	}
+	openCmd := "open"
+	if runtime.GOOS == "linux" {
+		openCmd = "xdg-open"
+	}
+	return tea.ExecProcess(exec.Command(openCmd, path), func(err error) tea.Msg {
+		return mcpEditorDoneMsg{err: err}
+	})
+}
+
 // mcpUpdateMsg 在 MCP Manager 状态变更时由 waitMCPUpdate 发送。
 type mcpUpdateMsg struct {
 	statuses []mcppkg.ServerStatus
@@ -243,6 +265,10 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.taskPanelMode {
 			return m.handleTaskPanelKey(msg)
 		}
+		// MCP 工具面板（mcpPanelMode）激活时：全部按键交由 handleMCPPanelKey 处理。
+		if m.mcpPanelMode {
+			return m.handleMCPPanelKey(msg)
+		}
 		switch msg.Type {
 		case tea.KeyEsc:
 			// Shell 模式下按 Esc：清空输入并退出 Shell 模式，恢复普通状态
@@ -348,27 +374,11 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				)
 			}
 
-			// /mcp 列出当前 MCP Server 状态和已加载的工具（不走 LLM）。
+			// /mcp 打开 MCP 工具面板（模态），展示服务器状态 + 工具列表，支持编辑配置。
 			if raw == "/mcp" {
-				if len(m.mcpServers) == 0 {
-					m.lines = append(m.lines, dimStyle.Render("  [MCP] 未配置 MCP Server（在项目根目录创建 .mcp.json）"))
-				} else {
-					m.lines = append(m.lines, dimStyle.Render("  [MCP] 服务器状态:"))
-					for _, s := range m.mcpServers {
-						var statusStr string
-						switch s.Status {
-						case mcppkg.StatusConnected:
-							statusStr = toolOKStyle.Render("● 已连接") + dimStyle.Render(fmt.Sprintf(" (%d 工具)", s.ToolsLen))
-						case mcppkg.StatusFailed:
-							statusStr = toolErrStyle.Render("✗ 失败") + dimStyle.Render(": "+s.ErrMsg)
-						default:
-							statusStr = dimStyle.Render("○ 连接中…")
-						}
-						m.lines = append(m.lines, "  "+dimStyle.Render(s.Name+": ")+statusStr)
-					}
-				}
-				m.input.Focus()
-				return m, textinput.Blink
+				m.mcpPanelMode = true
+				m.mcpPanelScroll = 0
+				return m, nil
 			}
 
 			// Shell 模式: "!" 前缀直接执行 Bash 命令，绕过 LLM
@@ -519,6 +529,10 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.mcpCh != nil {
 			return m, waitMCPUpdate(m.mcpCh)
 		}
+		return m, nil
+
+	case mcpEditorDoneMsg:
+		// 编辑器退出后恢复 TUI；配置修改需重启 harness9 生效。
 		return m, nil
 
 	case subAgentDirectMsg:
@@ -1862,4 +1876,39 @@ func (m tuiModel) writeApprovalToConfig(req *engine.ApprovalRequest) {
 		return
 	}
 	_ = permission.SaveRules(m.settingsPath, rules)
+}
+
+// handleMCPPanelKey 处理 MCP 工具面板（模态）的键盘输入。
+//
+//   - Esc    → 关闭面板，返回对话视图
+//   - e / E  → 暂停 TUI，打开 .mcp.json 配置文件（$EDITOR 或系统关联程序）
+//   - ↑ / k  → 向上滚动工具列表
+//   - ↓ / j  → 向下滚动工具列表
+//   - Ctrl+C → 退出程序
+func (m tuiModel) handleMCPPanelKey(msg tea.KeyMsg) (tuiModel, tea.Cmd) {
+	switch msg.Type {
+	case tea.KeyEsc:
+		m.mcpPanelMode = false
+		m.mcpPanelScroll = 0
+	case tea.KeyUp:
+		if m.mcpPanelScroll > 0 {
+			m.mcpPanelScroll--
+		}
+	case tea.KeyDown:
+		m.mcpPanelScroll++
+	case tea.KeyCtrlC:
+		return m, tea.Quit
+	case tea.KeyRunes:
+		switch string(msg.Runes) {
+		case "k":
+			if m.mcpPanelScroll > 0 {
+				m.mcpPanelScroll--
+			}
+		case "j":
+			m.mcpPanelScroll++
+		case "e", "E":
+			return m, openMCPConfigCmd(m.mcpConfigPath)
+		}
+	}
+	return m, nil
 }

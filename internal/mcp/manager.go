@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	"github.com/harness9/internal/logfmt"
 	"github.com/harness9/internal/tools"
@@ -21,12 +23,19 @@ const (
 	StatusFailed    Status = "failed"
 )
 
+// ToolDetail 是 MCP Server 单个工具的摘要，供 TUI 工具面板展示。
+type ToolDetail struct {
+	AdapterName string // 注册到 Registry 的完整名称（格式：mcp__{server}__{tool}）
+	Description string // 工具原始描述
+}
+
 // ServerStatus 是 MCP Server 状态快照，供 TUI 展示。
 type ServerStatus struct {
-	Name     string
-	Status   Status
-	ToolsLen int    // 已加载的工具数量（连接成功后填充）
-	ErrMsg   string // 连接失败时的错误信息
+	Name        string
+	Status      Status
+	ToolsLen    int          // 已加载的工具数量（连接成功后填充）
+	ErrMsg      string       // 连接失败时的错误信息
+	ToolDetails []ToolDetail // 连接成功后填充，供工具面板逐条展示
 }
 
 // Manager 管理多个 MCP Server 的连接生命周期。
@@ -84,9 +93,21 @@ func (m *Manager) Start(ctx context.Context) error {
 				return
 			}
 
+			toolDetails := make([]ToolDetail, 0, len(client.Tools))
+			for _, t := range client.Tools {
+				toolDetails = append(toolDetails, ToolDetail{
+					AdapterName: "mcp__" + sanitizeName(name) + "__" + sanitizeName(t.Name),
+					Description: t.Description,
+				})
+			}
 			m.mu.Lock()
 			m.clients[name] = client
-			m.status[name] = ServerStatus{Name: name, Status: StatusConnected, ToolsLen: len(client.Tools)}
+			m.status[name] = ServerStatus{
+				Name:        name,
+				Status:      StatusConnected,
+				ToolsLen:    len(client.Tools),
+				ToolDetails: toolDetails,
+			}
 			m.mu.Unlock()
 			m.sendNotify()
 			log.Print(logfmt.FormatMsg("mcp", fmt.Sprintf("server %q connected, %d tools", name, len(client.Tools))))
@@ -190,4 +211,17 @@ func (m *Manager) sendNotify() {
 	}
 	statuses := m.Statuses()
 	m.notify(statuses)
+}
+
+// sanitizeName 将工具/服务器名中的非字母数字字符替换为下划线，与 tools.sanitizeMCPName 保持同逻辑。
+func sanitizeName(s string) string {
+	var sb strings.Builder
+	for _, r := range s {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) || r == '_' {
+			sb.WriteRune(r)
+		} else {
+			sb.WriteRune('_')
+		}
+	}
+	return sb.String()
 }
