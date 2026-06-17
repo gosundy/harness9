@@ -26,6 +26,8 @@ import (
 
 	"github.com/charmbracelet/lipgloss"
 
+	mcppkg "github.com/harness9/internal/mcp"
+
 	"github.com/harness9/internal/engine"
 	"github.com/harness9/internal/memory"
 	"github.com/harness9/internal/planning"
@@ -598,6 +600,10 @@ func (m tuiModel) View() string {
 			sb.WriteString(bar)
 			sb.WriteByte('\n')
 		}
+		if bar := m.renderMCPBar(); bar != "" {
+			sb.WriteString(bar)
+			sb.WriteByte('\n')
+		}
 		sb.WriteString(m.renderInput())
 		sb.WriteByte('\n')
 		sb.WriteString(m.renderFooter())
@@ -651,4 +657,33 @@ func (m tuiModel) renderSandboxBar() string {
 		return ""
 	}
 	return bar
+}
+
+// renderMCPBar 渲染 MCP Server 状态栏，仅在有 MCP Server 时显示。
+// 格式: [MCP] context7 ● 2 tools │ other-server ✗ failed
+func (m tuiModel) renderMCPBar() string {
+	if len(m.mcpServers) == 0 {
+		return ""
+	}
+
+	parts := make([]string, 0, len(m.mcpServers)+1)
+	parts = append(parts, mcpBarBgStyle.Render("[MCP]"))
+
+	for i, s := range m.mcpServers {
+		var stateStyled string
+		switch s.Status {
+		case mcppkg.StatusConnected:
+			stateStyled = mcpConnectedStyle.Render(fmt.Sprintf("● %d tools", s.ToolsLen))
+		case mcppkg.StatusFailed:
+			stateStyled = mcpFailedStyle.Render("✗ failed")
+		default:
+			stateStyled = mcpPendingStyle.Render("○ …")
+		}
+		parts = append(parts, dimStyle.Render(s.Name)+" "+stateStyled)
+		if i < len(m.mcpServers)-1 {
+			parts = append(parts, sepStyle.Render("│"))
+		}
+	}
+
+	return strings.Join(parts, " ")
 }

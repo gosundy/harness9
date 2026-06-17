@@ -34,6 +34,7 @@ import (
 
 	"github.com/harness9/internal/engine"
 	"github.com/harness9/internal/hooks"
+	mcppkg "github.com/harness9/internal/mcp"
 	"github.com/harness9/internal/memory"
 	"github.com/harness9/internal/permission"
 	"github.com/harness9/internal/planning"
@@ -131,6 +132,22 @@ type subAgentDirectMsg struct {
 	done   bool
 	result string
 	err    error
+}
+
+// mcpUpdateMsg 在 MCP Manager 状态变更时由 waitMCPUpdate 发送。
+type mcpUpdateMsg struct {
+	statuses []mcppkg.ServerStatus
+}
+
+// waitMCPUpdate 返回一个 tea.Cmd，阻塞等待 mcpCh 发来更新后触发 mcpUpdateMsg。
+func waitMCPUpdate(ch <-chan []mcppkg.ServerStatus) tea.Cmd {
+	return func() tea.Msg {
+		statuses, ok := <-ch
+		if !ok {
+			return nil
+		}
+		return mcpUpdateMsg{statuses: statuses}
+	}
 }
 
 // sandboxUpdateMsg 在 Manager 状态变更时由 waitSandboxUpdate 发送。
@@ -331,6 +348,29 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				)
 			}
 
+			// /mcp 列出当前 MCP Server 状态和已加载的工具（不走 LLM）。
+			if raw == "/mcp" {
+				if len(m.mcpServers) == 0 {
+					m.lines = append(m.lines, dimStyle.Render("  [MCP] 未配置 MCP Server（在项目根目录创建 .mcp.json）"))
+				} else {
+					m.lines = append(m.lines, dimStyle.Render("  [MCP] 服务器状态:"))
+					for _, s := range m.mcpServers {
+						var statusStr string
+						switch s.Status {
+						case mcppkg.StatusConnected:
+							statusStr = toolOKStyle.Render("● 已连接") + dimStyle.Render(fmt.Sprintf(" (%d 工具)", s.ToolsLen))
+						case mcppkg.StatusFailed:
+							statusStr = toolErrStyle.Render("✗ 失败") + dimStyle.Render(": "+s.ErrMsg)
+						default:
+							statusStr = dimStyle.Render("○ 连接中…")
+						}
+						m.lines = append(m.lines, "  "+dimStyle.Render(s.Name+": ")+statusStr)
+					}
+				}
+				m.input.Focus()
+				return m, textinput.Blink
+			}
+
 			// Shell 模式: "!" 前缀直接执行 Bash 命令，绕过 LLM
 			// 不显示 "▶ You:" 行，改为 "$ cmd" 风格
 			if strings.HasPrefix(raw, "!") {
@@ -471,6 +511,13 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// 继续等待下次更新（持续监听 channel）；nil 守卫防止 nil channel 永久阻塞。
 		if m.sandboxCh != nil {
 			return m, waitSandboxUpdate(m.sandboxCh)
+		}
+		return m, nil
+
+	case mcpUpdateMsg:
+		m.mcpServers = msg.statuses
+		if m.mcpCh != nil {
+			return m, waitMCPUpdate(m.mcpCh)
 		}
 		return m, nil
 

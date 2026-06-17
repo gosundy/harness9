@@ -30,6 +30,7 @@ import (
 	"github.com/harness9/internal/hooks"
 	"github.com/harness9/internal/logfmt"
 	"github.com/harness9/internal/ltm"
+	mcppkg "github.com/harness9/internal/mcp"
 	"github.com/harness9/internal/memory"
 	"github.com/harness9/internal/observability"
 	"github.com/harness9/internal/permission"
@@ -255,6 +256,36 @@ Flags:
 		}
 	}
 
+	// ---- MCP 接线 ----
+	// 加载 .mcp.json 配置（文件不存在时静默返回空配置）。
+	mcpNotifyCh := make(chan []mcppkg.ServerStatus, 8)
+	mcpCfgPath := filepath.Join(workDir, ".mcp.json")
+	mcpCfg, mcpCfgErr := mcppkg.LoadConfig(mcpCfgPath)
+	if mcpCfgErr != nil {
+		log.Print(logfmt.FormatMsg("main", fmt.Sprintf("加载 MCP 配置失败（跳过）: %v", mcpCfgErr)))
+	}
+	var mcpMgr *mcppkg.Manager
+	if len(mcpCfg.Servers) > 0 {
+		mcpMgr = mcppkg.NewManager(mcpCfg)
+		mcpMgr.WithNotify(func(statuses []mcppkg.ServerStatus) {
+			select {
+			case mcpNotifyCh <- statuses:
+			default:
+			}
+		})
+		// 异步启动，避免 MCP Server 冷启动（如 npx）阻塞 TUI 渲染。
+		go func() {
+			if err := mcpMgr.Start(ctx); err != nil {
+				log.Print(logfmt.FormatMsg("main", fmt.Sprintf("MCP Manager 启动失败: %v", err)))
+				return
+			}
+			injected := mcpMgr.InjectTools(registry)
+			log.Print(logfmt.FormatMsg("main", fmt.Sprintf("MCP: 注入 %d 个工具", injected)))
+		}()
+		defer mcpMgr.Stop()
+	}
+	// ---- MCP 接线结束 ----
+
 	offloadHook := hooks.NewOffloadHook(workDir, sess.SessionID())
 	dangerHook := hooks.NewDangerHook()
 
@@ -378,7 +409,7 @@ Flags:
 
 	if term.IsTerminal(os.Stdin.Fd()) {
 		log.Print(logfmt.FormatMsg("main", fmt.Sprintf("harness9 TUI 启动 │ workDir=%s", workDir)))
-		if err := RunTUI(ctx, eng, mgr, sess, skillsIndex, todoStore, subAgentTracker, subAgentReg, subAgentRunner, workDir, modelName, sandboxNotifyCh); err != nil {
+		if err := RunTUI(ctx, eng, mgr, sess, skillsIndex, todoStore, subAgentTracker, subAgentReg, subAgentRunner, workDir, modelName, sandboxNotifyCh, mcpNotifyCh); err != nil {
 			log.Fatal(logfmt.FormatMsg("main", fmt.Sprintf("TUI 退出: %v", err)))
 		}
 	} else {
