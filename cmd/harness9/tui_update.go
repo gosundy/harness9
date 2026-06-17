@@ -22,6 +22,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -34,6 +35,7 @@ import (
 
 	"github.com/harness9/internal/engine"
 	"github.com/harness9/internal/hooks"
+	mcppkg "github.com/harness9/internal/mcp"
 	"github.com/harness9/internal/memory"
 	"github.com/harness9/internal/permission"
 	"github.com/harness9/internal/planning"
@@ -90,6 +92,7 @@ var builtinCmds = []struct {
 	{"plan", "进入规划模式分析任务"},
 	{"compact", "手动压缩上下文"},
 	{"tasks", "查看后台子代理任务"},
+	{"mcp", "查看 MCP 工具列表并编辑配置"},
 	{"exit", "退出 TUI"},
 }
 
@@ -131,6 +134,43 @@ type subAgentDirectMsg struct {
 	done   bool
 	result string
 	err    error
+}
+
+// mcpEditorDoneMsg 在用户关闭 MCP 配置编辑器后投递（tea.ExecProcess 回调）。
+type mcpEditorDoneMsg struct{ err error }
+
+// openMCPConfigCmd 暂停 TUI 并打开 .mcp.json 配置文件供用户手动编辑。
+// 优先使用 $EDITOR（终端编辑器，TUI 挂起等待退出），否则使用系统关联程序打开（后台）。
+func openMCPConfigCmd(path string) tea.Cmd {
+	editor := os.Getenv("EDITOR")
+	if editor != "" {
+		return tea.ExecProcess(exec.Command(editor, path), func(err error) tea.Msg {
+			return mcpEditorDoneMsg{err: err}
+		})
+	}
+	openCmd := "open"
+	if runtime.GOOS == "linux" {
+		openCmd = "xdg-open"
+	}
+	return tea.ExecProcess(exec.Command(openCmd, path), func(err error) tea.Msg {
+		return mcpEditorDoneMsg{err: err}
+	})
+}
+
+// mcpUpdateMsg 在 MCP Manager 状态变更时由 waitMCPUpdate 发送。
+type mcpUpdateMsg struct {
+	statuses []mcppkg.ServerStatus
+}
+
+// waitMCPUpdate 返回一个 tea.Cmd，阻塞等待 mcpCh 发来更新后触发 mcpUpdateMsg。
+func waitMCPUpdate(ch <-chan []mcppkg.ServerStatus) tea.Cmd {
+	return func() tea.Msg {
+		statuses, ok := <-ch
+		if !ok {
+			return nil
+		}
+		return mcpUpdateMsg{statuses: statuses}
+	}
 }
 
 // sandboxUpdateMsg 在 Manager 状态变更时由 waitSandboxUpdate 发送。
@@ -225,6 +265,10 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// 屏蔽普通输入。面板为模态视图，由 View() 替换输入区渲染。
 		if m.taskPanelMode {
 			return m.handleTaskPanelKey(msg)
+		}
+		// MCP 工具面板（mcpPanelMode）激活时：全部按键交由 handleMCPPanelKey 处理。
+		if m.mcpPanelMode {
+			return m.handleMCPPanelKey(msg)
 		}
 		switch msg.Type {
 		case tea.KeyEsc:
@@ -329,6 +373,13 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						return compactDoneMsg{data: data}
 					},
 				)
+			}
+
+			// /mcp 打开 MCP 工具面板（模态），展示服务器状态 + 工具列表，支持编辑配置。
+			if raw == "/mcp" {
+				m.mcpPanelMode = true
+				m.mcpPanelScroll = 0
+				return m, nil
 			}
 
 			// Shell 模式: "!" 前缀直接执行 Bash 命令，绕过 LLM
@@ -472,6 +523,17 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.sandboxCh != nil {
 			return m, waitSandboxUpdate(m.sandboxCh)
 		}
+		return m, nil
+
+	case mcpUpdateMsg:
+		m.mcpServers = msg.statuses
+		if m.mcpCh != nil {
+			return m, waitMCPUpdate(m.mcpCh)
+		}
+		return m, nil
+
+	case mcpEditorDoneMsg:
+		// 编辑器退出后恢复 TUI；配置修改需重启 harness9 生效。
 		return m, nil
 
 	case subAgentDirectMsg:
@@ -1815,4 +1877,62 @@ func (m tuiModel) writeApprovalToConfig(req *engine.ApprovalRequest) {
 		return
 	}
 	_ = permission.SaveRules(m.settingsPath, rules)
+}
+
+// mcpPanelLineCount 计算 renderMCPPanel 会生成的总行数，用于滚动上界控制。
+func (m tuiModel) mcpPanelLineCount() int {
+	count := 0
+	for _, s := range m.mcpServers {
+		count++ // 服务器 header 行
+		if s.Status == mcppkg.StatusConnected {
+			count += len(s.ToolDetails) * 2 // 工具名 + 描述各一行
+		} else if s.ErrMsg != "" {
+			count++ // 错误信息行
+		}
+		count++ // 空行分隔
+	}
+	return count
+}
+
+// handleMCPPanelKey 处理 MCP 工具面板（模态）的键盘输入。
+//
+//   - Esc    → 关闭面板，返回对话视图
+//   - e / E  → 暂停 TUI，打开 .mcp.json 配置文件（$EDITOR 或系统关联程序）
+//   - ↑ / k  → 向上滚动工具列表
+//   - ↓ / j  → 向下滚动工具列表（夹住在内容末尾）
+//   - Ctrl+C → 退出程序
+func (m tuiModel) handleMCPPanelKey(msg tea.KeyMsg) (tuiModel, tea.Cmd) {
+	maxScroll := m.mcpPanelLineCount()
+	if maxScroll > 0 {
+		maxScroll-- // 最多滚到最后一行可见
+	}
+	switch msg.Type {
+	case tea.KeyEsc:
+		m.mcpPanelMode = false
+		m.mcpPanelScroll = 0
+	case tea.KeyUp:
+		if m.mcpPanelScroll > 0 {
+			m.mcpPanelScroll--
+		}
+	case tea.KeyDown:
+		if m.mcpPanelScroll < maxScroll {
+			m.mcpPanelScroll++
+		}
+	case tea.KeyCtrlC:
+		return m, tea.Quit
+	case tea.KeyRunes:
+		switch string(msg.Runes) {
+		case "k":
+			if m.mcpPanelScroll > 0 {
+				m.mcpPanelScroll--
+			}
+		case "j":
+			if m.mcpPanelScroll < maxScroll {
+				m.mcpPanelScroll++
+			}
+		case "e", "E":
+			return m, openMCPConfigCmd(m.mcpConfigPath)
+		}
+	}
+	return m, nil
 }

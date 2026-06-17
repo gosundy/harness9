@@ -18,6 +18,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/harness9/internal/engine"
+	mcppkg "github.com/harness9/internal/mcp"
 	"github.com/harness9/internal/memory"
 	"github.com/harness9/internal/planning"
 	"github.com/harness9/internal/sandbox"
@@ -139,6 +140,12 @@ var (
 	sandboxPendingStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("11"))  // 黄色：Pending
 	sandboxStoppingStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("240")) // 灰色：Stopping/Terminated
 	sandboxFailedStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("9"))   // 红色：Failed
+
+	// MCP 状态栏样式 — 位于 SandboxBar 下方（如有），仅在有 MCP Server 时显示
+	mcpBarBgStyle     = lipgloss.NewStyle().Background(lipgloss.Color("17")).Foreground(lipgloss.Color("33")).Padding(0, 1)
+	mcpConnectedStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("10")) // 绿色：已连接
+	mcpPendingStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("11")) // 黄色：连接中
+	mcpFailedStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("9"))  // 红色：失败
 )
 
 type tuiPhase int
@@ -304,6 +311,15 @@ type tuiModel struct {
 	// Sandbox 状态展示（SandboxBar）
 	sandboxes []sandbox.SandboxInfo        // 当前所有活跃 Sandbox 快照
 	sandboxCh <-chan []sandbox.SandboxInfo // Manager 状态变更通知 channel（nil = 无 Sandbox）
+
+	// MCP 状态展示（MCPBar）
+	mcpServers []mcppkg.ServerStatus        // 当前所有 MCP Server 状态快照
+	mcpCh      <-chan []mcppkg.ServerStatus // Manager 状态变更通知 channel（nil = 无 MCP）
+
+	// MCP 工具面板（模态）：/mcp 命令打开，展示服务器 + 工具列表，支持编辑配置。
+	mcpPanelMode   bool   // 面板是否激活
+	mcpPanelScroll int    // 工具列表滚动偏移
+	mcpConfigPath  string // .mcp.json 绝对路径（用于编辑器打开）
 }
 
 // pendingToolInfo 记录单个并发工具调用的启动信息，用于 EventToolResult 时精确还原名称和参数。
@@ -314,7 +330,7 @@ type pendingToolInfo struct {
 }
 
 // newTUIModel 构造已初始化的 tuiModel：输入框聚焦，spinner 使用 Dot 样式。
-func newTUIModel(eng *engine.AgentEngine, idx *skills.Index, mgr *memory.Manager, sess memory.Session, todoStore *planning.TodoStore, tracker *subagent.TaskTracker, reg *subagent.Registry, runner *subagent.Runner, outerCtx context.Context, workDir, modelName string, sandboxCh <-chan []sandbox.SandboxInfo) tuiModel {
+func newTUIModel(eng *engine.AgentEngine, idx *skills.Index, mgr *memory.Manager, sess memory.Session, todoStore *planning.TodoStore, tracker *subagent.TaskTracker, reg *subagent.Registry, runner *subagent.Runner, outerCtx context.Context, workDir, modelName string, sandboxCh <-chan []sandbox.SandboxInfo, mcpCh <-chan []mcppkg.ServerStatus) tuiModel {
 	sp := spinner.New()
 	sp.Spinner = spinner.Dot
 	sp.Style = lipgloss.NewStyle().Foreground(lipgloss.Color("11"))
@@ -345,6 +361,8 @@ func newTUIModel(eng *engine.AgentEngine, idx *skills.Index, mgr *memory.Manager
 		subAgentReg:       reg,
 		subAgentRunner:    runner,
 		sandboxCh:         sandboxCh,
+		mcpCh:             mcpCh,
+		mcpConfigPath:     filepath.Join(workDir, ".mcp.json"),
 	}
 	if sess != nil {
 		m.sessionID = sess.SessionID()
@@ -353,23 +371,27 @@ func newTUIModel(eng *engine.AgentEngine, idx *skills.Index, mgr *memory.Manager
 	return m
 }
 
-// Init 实现 tea.Model，启动输入框光标闪烁；若有 sandboxCh 同时启动 Sandbox 状态监听。
+// Init 实现 tea.Model，启动输入框光标闪烁；若有 sandboxCh 同时启动 Sandbox 状态监听；若有 mcpCh 同时启动 MCP 状态监听。
 func (m tuiModel) Init() tea.Cmd {
+	cmds := []tea.Cmd{textinput.Blink}
 	if m.sandboxCh != nil {
-		return tea.Batch(textinput.Blink, waitSandboxUpdate(m.sandboxCh))
+		cmds = append(cmds, waitSandboxUpdate(m.sandboxCh))
 	}
-	return textinput.Blink
+	if m.mcpCh != nil {
+		cmds = append(cmds, waitMCPUpdate(m.mcpCh))
+	}
+	return tea.Batch(cmds...)
 }
 
 // RunTUI 以 AltScreen 模式启动 Bubbletea 程序。
 // 用户按 Ctrl-C/Ctrl-D（空闲时）退出后返回。
-func RunTUI(ctx context.Context, eng *engine.AgentEngine, mgr *memory.Manager, sess memory.Session, idx *skills.Index, todoStore *planning.TodoStore, tracker *subagent.TaskTracker, reg *subagent.Registry, runner *subagent.Runner, workDir, modelName string, sandboxCh <-chan []sandbox.SandboxInfo) error {
+func RunTUI(ctx context.Context, eng *engine.AgentEngine, mgr *memory.Manager, sess memory.Session, idx *skills.Index, todoStore *planning.TodoStore, tracker *subagent.TaskTracker, reg *subagent.Registry, runner *subagent.Runner, workDir, modelName string, sandboxCh <-chan []sandbox.SandboxInfo, mcpCh <-chan []mcppkg.ServerStatus) error {
 	// TUI 独占终端，将内部日志重定向到静默，避免污染 AltScreen 输出。
 	// 退出后恢复原 Writer，避免影响同进程其他逻辑（如测试框架）。
 	origWriter := log.Writer()
 	log.SetOutput(io.Discard)
 	defer log.SetOutput(origWriter)
-	m := newTUIModel(eng, idx, mgr, sess, todoStore, tracker, reg, runner, ctx, workDir, modelName, sandboxCh)
+	m := newTUIModel(eng, idx, mgr, sess, todoStore, tracker, reg, runner, ctx, workDir, modelName, sandboxCh, mcpCh)
 	p := tea.NewProgram(m, tea.WithAltScreen(), tea.WithContext(ctx), tea.WithMouseCellMotion())
 	// 后台子代理完成时，经 TaskTracker 通知回调向 TUI 投递 subAgentNotifyMsg，触发即时完成提示。
 	// p.Send 是 goroutine-safe 的，可从后台 goroutine 调用。

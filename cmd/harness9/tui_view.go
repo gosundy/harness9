@@ -26,6 +26,8 @@ import (
 
 	"github.com/charmbracelet/lipgloss"
 
+	mcppkg "github.com/harness9/internal/mcp"
+
 	"github.com/harness9/internal/engine"
 	"github.com/harness9/internal/memory"
 	"github.com/harness9/internal/planning"
@@ -586,6 +588,12 @@ func (m tuiModel) View() string {
 			sb.WriteString(m.renderStatusBar())
 			return sb.String()
 		}
+		if m.mcpPanelMode {
+			sb.WriteString(m.renderMCPPanel())
+			sb.WriteByte('\n')
+			sb.WriteString(m.renderStatusBar())
+			return sb.String()
+		}
 		if m.taskPanelMode {
 			sb.WriteString(m.renderTaskPanel())
 			sb.WriteByte('\n')
@@ -595,6 +603,10 @@ func (m tuiModel) View() string {
 		sb.WriteString(m.renderStatusBar())
 		sb.WriteByte('\n')
 		if bar := m.renderSandboxBar(); bar != "" {
+			sb.WriteString(bar)
+			sb.WriteByte('\n')
+		}
+		if bar := m.renderMCPBar(); bar != "" {
 			sb.WriteString(bar)
 			sb.WriteByte('\n')
 		}
@@ -651,4 +663,90 @@ func (m tuiModel) renderSandboxBar() string {
 		return ""
 	}
 	return bar
+}
+
+// renderMCPBar 渲染 MCP Server 状态栏，仅在有 MCP Server 时显示。
+// 格式: [MCP] context7 ● 2 tools │ other-server ✗ failed
+func (m tuiModel) renderMCPBar() string {
+	if len(m.mcpServers) == 0 {
+		return ""
+	}
+
+	parts := make([]string, 0, len(m.mcpServers)+1)
+	parts = append(parts, mcpBarBgStyle.Render("[MCP]"))
+
+	for i, s := range m.mcpServers {
+		var stateStyled string
+		switch s.Status {
+		case mcppkg.StatusConnected:
+			stateStyled = mcpConnectedStyle.Render(fmt.Sprintf("● %d tools", s.ToolsLen))
+		case mcppkg.StatusFailed:
+			stateStyled = mcpFailedStyle.Render("✗ failed")
+		default:
+			stateStyled = mcpPendingStyle.Render("○ …")
+		}
+		parts = append(parts, dimStyle.Render(s.Name)+" "+stateStyled)
+		if i < len(m.mcpServers)-1 {
+			parts = append(parts, sepStyle.Render("│"))
+		}
+	}
+
+	return strings.Join(parts, " ")
+}
+
+// renderMCPPanel 渲染 MCP 工具管理面板（模态）。
+// 展示所有已配置 MCP Server 的连接状态及工具列表，底部提供编辑配置的快捷键。
+func (m tuiModel) renderMCPPanel() string {
+	var sb strings.Builder
+	sb.WriteString(cyanStyle.Render("MCP 工具管理") + "\n\n")
+
+	if len(m.mcpServers) == 0 {
+		sb.WriteString(dimStyle.Render("  未配置 MCP Server。") + "\n")
+		sb.WriteString(dimStyle.Render("  创建 .mcp.json 后重启 harness9。") + "\n\n")
+		sb.WriteString(dimStyle.Render("  e 创建配置  Esc 关闭"))
+		return sb.String()
+	}
+
+	// 收集全部行，以支持滚动
+	var lines []string
+	for _, s := range m.mcpServers {
+		switch s.Status {
+		case mcppkg.StatusConnected:
+			header := mcpConnectedStyle.Render("●") + " " +
+				lipgloss.NewStyle().Bold(true).Render(s.Name) +
+				dimStyle.Render(fmt.Sprintf("  %d 工具", s.ToolsLen))
+			lines = append(lines, header)
+			for _, t := range s.ToolDetails {
+				lines = append(lines, "  "+cyanStyle.Render("·")+" "+dimStyle.Render(t.AdapterName))
+				if t.Description != "" {
+					lines = append(lines, "    "+dimStyle.Render(truncateUTF8(t.Description, 68)))
+				}
+			}
+		case mcppkg.StatusFailed:
+			header := mcpFailedStyle.Render("✗") + " " +
+				lipgloss.NewStyle().Bold(true).Render(s.Name) +
+				dimStyle.Render("  连接失败")
+			lines = append(lines, header)
+			if s.ErrMsg != "" {
+				lines = append(lines, "    "+toolErrStyle.Render(truncateUTF8(s.ErrMsg, 68)))
+			}
+		default:
+			lines = append(lines, mcpPendingStyle.Render("○")+" "+
+				lipgloss.NewStyle().Bold(true).Render(s.Name)+
+				dimStyle.Render("  连接中…"))
+		}
+		lines = append(lines, "")
+	}
+
+	// 应用滚动偏移
+	start := m.mcpPanelScroll
+	if start >= len(lines) {
+		start = len(lines)
+	}
+	for _, ln := range lines[start:] {
+		sb.WriteString(ln + "\n")
+	}
+
+	sb.WriteString("\n" + dimStyle.Render("e 编辑配置  ↑↓/jk 滚动  Esc 关闭"))
+	return sb.String()
 }
