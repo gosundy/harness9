@@ -24,6 +24,18 @@ func TestWithIncludeReasoning_AutoDetectOpenRouter(t *testing.T) {
 	}
 }
 
+func TestWithIncludeReasoning_AutoDetectRequesty(t *testing.T) {
+	t.Setenv("OPENAI_API_KEY", "test-key")
+	t.Setenv("OPENAI_BASE_URL", "https://router.requesty.ai/v1")
+	p, err := NewOpenAIProvider("gpt-4o")
+	if err != nil {
+		t.Fatalf("NewOpenAIProvider: %v", err)
+	}
+	if !p.includeReasoning {
+		t.Error("Requesty base URL should auto-enable includeReasoning")
+	}
+}
+
 func TestWithIncludeReasoning_NonOpenRouterDisabled(t *testing.T) {
 	t.Setenv("OPENAI_API_KEY", "test-key")
 	t.Setenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
