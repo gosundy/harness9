@@ -71,7 +71,12 @@ func NewAnthropicProvider(model string, maxTokens int64, opts ...AnthropicOption
 		maxTokens = 4096
 	}
 	p := &AnthropicProvider{
-		client:    anthropic.NewClient(option.WithAPIKey(apiKey), option.WithBaseURL(baseURL)),
+		client: anthropic.NewClient(
+			option.WithAPIKey(apiKey),
+			option.WithBaseURL(baseURL),
+			option.WithMaxRetries(providerMaxRetries()),
+			option.WithRequestTimeout(providerRequestTimeout()),
+		),
 		model:     model,
 		maxTokens: maxTokens,
 	}
@@ -271,8 +276,10 @@ func (p *AnthropicProvider) convertMessages(msgs []schema.Message) ([]anthropic.
 			systemPrompt = msg.Content
 		case schema.RoleUser:
 			if msg.ToolCallID != "" {
+				// 透传结构化错误标记：工具失败时 is_error=true，强化模型自愈，
+				// 而非硬编码 false 仅靠文本前缀让模型猜测。
 				anthropicMsgs = append(anthropicMsgs, anthropic.NewUserMessage(
-					anthropic.NewToolResultBlock(msg.ToolCallID, msg.Content, false),
+					anthropic.NewToolResultBlock(msg.ToolCallID, msg.Content, msg.IsError),
 				))
 			} else {
 				anthropicMsgs = append(anthropicMsgs, anthropic.NewUserMessage(

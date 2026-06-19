@@ -116,7 +116,7 @@ func (t *EditFileTool) Execute(ctx context.Context, args json.RawMessage) (strin
 	}
 	originalContent := string(contentBytes)
 
-	newContent, err := fuzzyReplace(originalContent, input.SourceText, input.TargetText)
+	newContent, level, err := fuzzyReplaceWithLevel(originalContent, input.SourceText, input.TargetText)
 	if err != nil {
 		return "", err
 	}
@@ -125,8 +125,19 @@ func (t *EditFileTool) Execute(ctx context.Context, args json.RawMessage) (strin
 		return "", fmt.Errorf("写回文件失败: %w", err)
 	}
 
-	return buildEditSummary(input.Path, originalContent, newContent), nil
+	// level==1（精确匹配）时改动字节与意图完全一致，可声明权威无需复核；
+	// L2-L4（换行/去空/缩进容错）写入的字节可能与模型预期不同（尤其 Python 缩进敏感），
+	// 因此给出"建议复核缩进"的提示而非"无需确认"，避免在最该验证时抑制自愈。
+	return buildEditSummary(input.Path, originalContent, newContent, level == matchExact), nil
 }
+
+// 匹配级别常量：标识 fuzzyReplace 命中的容错层级，用于决定编辑结果的可信度提示。
+const (
+	matchExact      = 1 // L1 精确匹配
+	matchNewline    = 2 // L2 换行符归一化
+	matchTrimmed    = 3 // L3 整体首尾去空
+	matchLineByLine = 4 // L4 逐行去缩进
+)
 
 // editContextLines 是改动上下文中前后各保留的行数。
 const editContextLines = 3
@@ -141,7 +152,11 @@ const editContextLines = 3
 //   - 改动后的 3 行上下文（无前缀）
 //
 // 当变更行数超过 20 行时，只输出行数统计，避免结果过长撑满 LLM 上下文。
-func buildEditSummary(path, originalContent, newContent string) string {
+//
+// exactMatch 标识本次替换是否为 L1 精确匹配：
+//   - true：diff 即权威确认，提示无需额外复核；
+//   - false：L2-L4 容错匹配，写入字节可能与意图有出入，提示建议复核缩进/上下文。
+func buildEditSummary(path, originalContent, newContent string, exactMatch bool) string {
 	// 归一化换行符，保证跨平台比较一致
 	orig := strings.ReplaceAll(originalContent, "\r\n", "\n")
 	next := strings.ReplaceAll(newContent, "\r\n", "\n")
@@ -207,7 +222,12 @@ func buildEditSummary(path, originalContent, newContent string) string {
 	for i := origEnd + 1; i <= ctxEnd; i++ {
 		fmt.Fprintf(&sb, "  %s\n", origLines[i])
 	}
-	fmt.Fprint(&sb, "---\n✓ 以上 diff 已完整验证改动落地，无需额外 grep/sed/read_file 再次确认。")
+	if exactMatch {
+		fmt.Fprint(&sb, "---\n✓ 精确匹配，以上 diff 已确认改动落地，无需额外 grep/sed/read_file 再次确认。")
+	} else {
+		fmt.Fprint(&sb, "---\n⚠️ 本次为模糊匹配（换行/空白/缩进经过容错处理），写入字节可能与预期略有出入。"+
+			"建议用 read_file 复核改动处的缩进与上下文是否正确（尤其 Python 等缩进敏感语言）。")
+	}
 	return sb.String()
 }
 
@@ -227,17 +247,25 @@ func buildEditSummary(path, originalContent, newContent string) string {
 //	    逐行去除首尾空白后滑动窗口匹配，容忍缩进差异（空格 vs Tab）。
 //
 // 所有级别的匹配结果必须是唯一的（count == 1），多匹配或零匹配均返回明确错误。
+// fuzzyReplace 是 fuzzyReplaceWithLevel 的兼容封装，仅返回结果与错误。
 func fuzzyReplace(originalContent, sourceText, targetText string) (string, error) {
+	result, _, err := fuzzyReplaceWithLevel(originalContent, sourceText, targetText)
+	return result, err
+}
+
+// fuzzyReplaceWithLevel 在 fuzzyReplace 基础上额外返回命中的匹配层级（matchExact..matchLineByLine），
+// 供调用方据此调整结果可信度提示（精确匹配可声明权威，模糊匹配建议复核）。
+func fuzzyReplaceWithLevel(originalContent, sourceText, targetText string) (string, int, error) {
 	// 归一化 targetText 的换行符，避免替换后混用 \r\n 和 \n
 	normalizedTarget := strings.ReplaceAll(targetText, "\r\n", "\n")
 
 	// L1: 原始文本精确匹配（Exact Match）
 	count := strings.Count(originalContent, sourceText)
 	if count == 1 {
-		return strings.Replace(originalContent, sourceText, targetText, 1), nil
+		return strings.Replace(originalContent, sourceText, targetText, 1), matchExact, nil
 	}
 	if count > 1 {
-		return "", fmt.Errorf("source_text 匹配到了 %d 处，请提供更多的上下文代码以确保唯一性", count)
+		return "", 0, fmt.Errorf("source_text 匹配到了 %d 处，请提供更多的上下文代码以确保唯一性", count)
 	}
 
 	// 对原始内容做换行符归一化，进入 L2-L4
@@ -254,7 +282,7 @@ func fuzzyReplace(originalContent, sourceText, targetText string) (string, error
 		if hasCRLF {
 			result = strings.ReplaceAll(result, "\n", "\r\n")
 		}
-		return result, nil
+		return result, matchNewline, nil
 	}
 
 	// L3: 整体首尾去空匹配（Trimmed Match）
@@ -266,12 +294,16 @@ func fuzzyReplace(originalContent, sourceText, targetText string) (string, error
 			if hasCRLF {
 				result = strings.ReplaceAll(result, "\n", "\r\n")
 			}
-			return result, nil
+			return result, matchTrimmed, nil
 		}
 	}
 
 	// L4: 逐行去缩进匹配（Line-by-Line Indent-Agnostic Matching）
-	return lineByLineReplace(normalizedContent, normalizedSource, normalizedTarget, hasCRLF)
+	result, err := lineByLineReplace(normalizedContent, normalizedSource, normalizedTarget, hasCRLF)
+	if err != nil {
+		return "", 0, err
+	}
+	return result, matchLineByLine, nil
 }
 
 // lineByLineReplace 将文本按行切割，去除首尾空白后进行滑动窗口匹配（Sliding Window Matching）。
@@ -328,9 +360,16 @@ func lineByLineReplace(content, sourceText, targetText string, hasCRLF bool) (st
 		return "", fmt.Errorf("模糊匹配到了 %d 处代码，请提供更多上下文以定位", matchCount)
 	}
 
+	// 关键修正：L4 是缩进无关匹配，模型提供的 targetText 缩进未必与文件一致，
+	// 若原样写入会破坏缩进敏感语言（Python）的结构，产生 IndentationError。
+	// 这里以被匹配块首行的缩进为基准，对 targetText 重新缩进：保留其相对结构，
+	// 但将整体基准对齐到文件中被替换块的缩进。
+	baseIndent := leadingWhitespace(contentLines[matchStartIndex])
+	reindentedTarget := reindentBlock(targetText, baseIndent)
+
 	var newContentLines []string
 	newContentLines = append(newContentLines, contentLines[:matchStartIndex]...)
-	newContentLines = append(newContentLines, targetText)
+	newContentLines = append(newContentLines, reindentedTarget)
 	newContentLines = append(newContentLines, contentLines[matchEndIndex:]...)
 
 	result := strings.Join(newContentLines, "\n")
@@ -338,4 +377,53 @@ func lineByLineReplace(content, sourceText, targetText string, hasCRLF bool) (st
 		result = strings.ReplaceAll(result, "\n", "\r\n")
 	}
 	return result, nil
+}
+
+// leadingWhitespace 返回字符串开头的空白前缀（空格 / Tab）。
+func leadingWhitespace(s string) string {
+	return s[:len(s)-len(strings.TrimLeft(s, " \t"))]
+}
+
+// commonStringPrefix 返回 a 与 b 的最长公共前缀。
+func commonStringPrefix(a, b string) string {
+	n := len(a)
+	if len(b) < n {
+		n = len(b)
+	}
+	i := 0
+	for i < n && a[i] == b[i] {
+		i++
+	}
+	return a[:i]
+}
+
+// reindentBlock 将多行 target 重新缩进到 baseIndent 基准。
+//
+// 算法：先求所有非空行的最长公共空白前缀（target 自身的基准缩进），
+// 逐行剥离该公共前缀后改用 baseIndent，从而保留行间相对缩进、把整体对齐到文件中
+// 被替换块的缩进层级。纯空白行归一化为空行。
+func reindentBlock(target, baseIndent string) string {
+	lines := strings.Split(target, "\n")
+	common := ""
+	seeded := false
+	for _, ln := range lines {
+		if strings.TrimSpace(ln) == "" {
+			continue
+		}
+		lead := leadingWhitespace(ln)
+		if !seeded {
+			common = lead
+			seeded = true
+			continue
+		}
+		common = commonStringPrefix(common, lead)
+	}
+	for i, ln := range lines {
+		if strings.TrimSpace(ln) == "" {
+			lines[i] = ""
+			continue
+		}
+		lines[i] = baseIndent + strings.TrimPrefix(ln, common)
+	}
+	return strings.Join(lines, "\n")
 }

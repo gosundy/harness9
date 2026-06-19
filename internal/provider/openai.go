@@ -7,7 +7,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/tidwall/gjson"
 
@@ -16,6 +18,30 @@ import (
 	"github.com/openai/openai-go/v3/option"
 	"github.com/openai/openai-go/v3/shared"
 )
+
+// providerEnvInt 读取整型环境变量，缺省/非法时返回 def。
+func providerEnvInt(key string, def int) int {
+	if v := os.Getenv(key); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+			return n
+		}
+	}
+	return def
+}
+
+// providerRequestTimeout 返回单次 LLM 请求的超时（默认 600s）。
+// 用于防止"连接已建立但服务端中途挂起、字节不再流动"的请求吞掉整个实例预算；
+// 取值需远小于实例级超时、又足够长以容纳一次完整生成。env: LLM_REQUEST_TIMEOUT_SECS。
+func providerRequestTimeout() time.Duration {
+	return time.Duration(providerEnvInt("LLM_REQUEST_TIMEOUT_SECS", 600)) * time.Second
+}
+
+// providerMaxRetries 返回 SDK 内置重试次数（默认 5，高于 SDK 默认 2）。
+// 覆盖批量评测下常见的 429 限流；SDK 会自动遵循 Retry-After。env: LLM_MAX_RETRIES。
+// 注意：SDK 重试仅覆盖首字节到达前的错误，流式中途断连由引擎层 WithGenerateRetry 兜底。
+func providerMaxRetries() int {
+	return providerEnvInt("LLM_MAX_RETRIES", 5)
+}
 
 // OpenAIProvider 是 LLMProvider 的 OpenAI 兼容实现，支持所有遵循 OpenAI Chat Completion API
 // 规范的后端（包括 OpenAI 官方、Azure OpenAI、OpenRouter 等兼容端点）。
@@ -64,8 +90,13 @@ func NewOpenAIProvider(model string, opts ...OpenAIOption) (*OpenAIProvider, err
 	}
 
 	p := &OpenAIProvider{
-		client: openai.NewClient(option.WithAPIKey(apiKey), option.WithBaseURL(baseURL)),
-		model:  model,
+		client: openai.NewClient(
+			option.WithAPIKey(apiKey),
+			option.WithBaseURL(baseURL),
+			option.WithMaxRetries(providerMaxRetries()),
+			option.WithRequestTimeout(providerRequestTimeout()),
+		),
+		model: model,
 		// OpenRouter 需要 include_reasoning=true 才会在 delta.reasoning 中返回推理内容。
 		// 其他 OpenAI 兼容后端不含此参数时默认忽略，不产生副作用。
 		includeReasoning: strings.Contains(baseURL, "openrouter"),

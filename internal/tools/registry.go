@@ -80,7 +80,7 @@ func (r *registryImpl) GetAvailableTools() []schema.ToolDefinition {
 // Execute 根据工具名称查找并执行对应工具。若工具不存在，返回包含错误信息的 ToolResult。
 // 工具执行失败时，错误会被捕获并封装为 IsError=true 的 ToolResult，
 // 使引擎能够将错误信息作为 Observation 回传给 LLM，支持自愈（Self-Healing）重试。
-func (r *registryImpl) Execute(ctx context.Context, call schema.ToolCall) schema.ToolResult {
+func (r *registryImpl) Execute(ctx context.Context, call schema.ToolCall) (result schema.ToolResult) {
 	r.mu.RLock()
 	tool, exists := r.tools[call.Name]
 	r.mu.RUnlock()
@@ -92,6 +92,19 @@ func (r *registryImpl) Execute(ctx context.Context, call schema.ToolCall) schema
 			IsError:    true,
 		}
 	}
+
+	// 兜底 recover：将工具内部的 panic（如自定义工具 / MCP 适配器的 nil map 写、
+	// 越界等）转换为 IsError 结果，而非让单个工具崩溃拖垮整个进程
+	// （并发执行时一个 goroutine panic 会终止整个 agent loop / benchmark 实例）。
+	defer func() {
+		if rec := recover(); rec != nil {
+			result = schema.ToolResult{
+				ToolCallID: call.ID,
+				Output:     fmt.Sprintf("Error: 工具 '%s' 执行时发生 panic: %v", call.Name, rec),
+				IsError:    true,
+			}
+		}
+	}()
 
 	output, err := tool.Execute(ctx, call.Arguments)
 

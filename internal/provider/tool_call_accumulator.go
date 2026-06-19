@@ -11,6 +11,7 @@
 package provider
 
 import (
+	"sort"
 	"strings"
 
 	"github.com/harness9/internal/schema"
@@ -59,16 +60,25 @@ func (a toolCallAccumulators) appendArgs(idx int, partial string) {
 
 // finalize 按 Index 升序重组累积结果为 ToolCall 列表，供 StreamChunkDone 携带。
 // 返回 nil 表示流中没有工具调用（不应作为错误处理）。
+//
+// 关键修正：先收集实际存在的 key 再升序遍历，而非假设 key 从 0 连续。
+// Anthropic 流中 index 是 content-block 序号——开启 extended thinking 或有正文时，
+// thinking/text 块占据 index 0，tool_use 块从 1 起，key 集合形如 {1,2,3} 而非 {0,1,2}。
+// 旧实现 `for i:=0;i<len(a);i++` 会因 a[0] 不存在而漏掉末尾的工具调用，
+// 导致模型实际发出的工具调用被静默丢弃。
 func (a toolCallAccumulators) finalize() []schema.ToolCall {
 	if len(a) == 0 {
 		return nil
 	}
+	keys := make([]int, 0, len(a))
+	for k := range a {
+		keys = append(keys, k)
+	}
+	sort.Ints(keys)
+
 	result := make([]schema.ToolCall, 0, len(a))
-	for i := 0; i < len(a); i++ {
-		acc, ok := a[i]
-		if !ok {
-			continue
-		}
+	for _, k := range keys {
+		acc := a[k]
 		result = append(result, schema.ToolCall{
 			ID:        acc.id,
 			Name:      acc.name,

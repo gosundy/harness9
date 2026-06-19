@@ -67,19 +67,23 @@ func isSensitivePath(absPath string) bool {
 //	safePath("/project", "../../etc/passwd")     → "", error
 //	safePath("/project", "./README.md")          → "/project/README.md", nil
 func safePath(workDir, inputPath string) (string, error) {
-	// 敏感路径先检：对绝对路径输入，在拼接前直接校验，防止攻击者通过绝对路径绕过沙箱。
-	if filepath.IsAbs(inputPath) {
-		cleanInput := filepath.Clean(inputPath)
-		if isSensitivePath(cleanInput) {
-			return "", fmt.Errorf("路径 '%s' 是受保护的敏感路径，禁止访问", inputPath)
-		}
-	}
-
 	cleanWorkDir := filepath.Clean(workDir)
-	joined := filepath.Join(cleanWorkDir, inputPath)
-	absPath, err := filepath.Abs(joined)
-	if err != nil {
-		return "", fmt.Errorf("解析路径失败: %w", err)
+
+	// 绝对路径输入直接规范化，绝不再与 workDir 拼接。
+	// filepath.Join(workDir, "/abs/path") 不会把第二个参数当作绝对路径处理，
+	// 而是直接拼接成 "/workDir/abs/path"；当输入恰好是 workDir 下的绝对路径
+	// （如 SWE-bench prompt 注入的绝对工作目录 + 子路径）时会产生
+	// "/workDir/workDir/sub" 的翻倍路径，虽通过前缀校验却指向不存在的文件。
+	// 因此对绝对路径走独立分支，相对路径才与 workDir 拼接。
+	var absPath string
+	if filepath.IsAbs(inputPath) {
+		absPath = filepath.Clean(inputPath)
+	} else {
+		var err error
+		absPath, err = filepath.Abs(filepath.Join(cleanWorkDir, inputPath))
+		if err != nil {
+			return "", fmt.Errorf("解析路径失败: %w", err)
+		}
 	}
 
 	// 安全校验：确保解析后的绝对路径仍以工作区目录为前缀。

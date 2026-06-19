@@ -135,6 +135,77 @@ func TestBashTool_Execute_ParentContextCancelled(t *testing.T) {
 	}
 }
 
+// TestBashTool_Truncation_KeepsHeadAndTail 验证大输出同时保留头部与尾部，
+// 不再像旧实现那样只留头部丢尾部（测试失败摘要/traceback 在尾部）。
+func TestBashTool_Truncation_KeepsHeadAndTail(t *testing.T) {
+	head := "HEAD_MARKER_START"
+	tail := "TAIL_MARKER_FAILED_ASSERTION"
+	mid := strings.Repeat("x", maxOutputLen+1000)
+	full := head + mid + tail
+	env := &mockEnv{runOut: full}
+	tool := NewBashTool("/tmp", WithEnvironment(env))
+
+	out, err := tool.Execute(context.Background(), json.RawMessage(`{"command":"pytest"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, head) {
+		t.Error("截断后应保留头部")
+	}
+	if !strings.Contains(out, tail) {
+		t.Error("截断后必须保留尾部（pytest 的 FAILED/traceback 在尾部）")
+	}
+	if !strings.Contains(out, "截断") {
+		t.Error("应包含截断标记")
+	}
+}
+
+// TestBashTool_PerCallTimeout 验证 timeout_secs 能放宽单次命令超时。
+func TestBashTool_PerCallTimeout(t *testing.T) {
+	tool := NewBashTool("/tmp")
+	// 默认 120s 足够；这里只验证 timeout_secs 被解析且命令正常完成。
+	out, err := tool.Execute(context.Background(), json.RawMessage(`{"command":"echo ok","timeout_secs":5}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "ok") {
+		t.Errorf("expected ok, got %q", out)
+	}
+}
+
+// TestBashTool_EffectiveTimeout 验证超时优先级：per-call > 工具配置 > 默认。
+func TestBashTool_EffectiveTimeout(t *testing.T) {
+	base := NewBashTool("/tmp")
+	if got := base.effectiveTimeout(0); got != defaultBashTimeout {
+		t.Errorf("default timeout = %v, want %v", got, defaultBashTimeout)
+	}
+	configured := NewBashTool("/tmp", WithBashTimeout(300*time.Second))
+	if got := configured.effectiveTimeout(0); got != 300*time.Second {
+		t.Errorf("configured timeout = %v, want 300s", got)
+	}
+	if got := configured.effectiveTimeout(45); got != 45*time.Second {
+		t.Errorf("per-call timeout should win: got %v, want 45s", got)
+	}
+	// 钳制到上限
+	if got := base.effectiveTimeout(99999); got != maxBashTimeout {
+		t.Errorf("per-call timeout should be clamped to %v, got %v", maxBashTimeout, got)
+	}
+}
+
+// TestBashTool_TimeoutBanner 验证本地超时路径追加清晰的 TIMEOUT 横幅。
+func TestBashTool_TimeoutBanner(t *testing.T) {
+	tool := NewBashTool("/tmp", WithBashTimeout(120*time.Second))
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	out, err := tool.Execute(ctx, json.RawMessage(`{"command":"sleep 10"}`))
+	if err != nil {
+		t.Fatalf("bash 不应返回 Go error: %v", err)
+	}
+	if !strings.Contains(out, "TIMEOUT") {
+		t.Errorf("超时应包含 TIMEOUT 横幅，got: %q", out)
+	}
+}
+
 // mockEnv 是 sandbox.Environment 的测试 mock，记录所有 RunBash 调用。
 type mockEnv struct {
 	runOut string

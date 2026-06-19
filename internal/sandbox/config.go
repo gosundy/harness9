@@ -4,6 +4,7 @@ package sandbox
 
 import (
 	"os"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -25,18 +26,27 @@ type SandboxConfig struct {
 	StartTimeout time.Duration
 	// StopTimeout docker stop 的宽限期，超时后 SIGKILL。
 	StopTimeout time.Duration
+	// BootstrapCmd 是容器就绪后、Agent 开始前执行一次的初始化命令（在独立的、较长的
+	// BootstrapTimeout 预算内运行，不受单条 bash 命令超时约束）。空字符串表示不执行。
+	// 典型用途：为 SWE-bench 仓库安装依赖（如 `pip install -e . -q`），或激活预置 conda 环境。
+	// 这是接入官方 SWE-bench 每实例镜像（仓库已预装）的关键接缝——届时只需配置镜像 + 此命令。
+	BootstrapCmd string
+	// BootstrapTimeout 是 BootstrapCmd 的超时（默认 600s）。
+	BootstrapTimeout time.Duration
 }
 
 // DefaultConfig 从环境变量读取配置，未设置时使用内置安全默认值。
 func DefaultConfig() SandboxConfig {
 	return SandboxConfig{
-		Enabled:      strings.ToLower(os.Getenv("SANDBOX_ENABLED")) != "false",
-		Image:        getenvOr("SANDBOX_IMAGE", "ubuntu:22.04"),
-		CPUs:         getenvOr("SANDBOX_CPUS", "1.0"),
-		Memory:       getenvOr("SANDBOX_MEMORY", "512m"),
-		PidsLimit:    256,
-		StartTimeout: 30 * time.Second,
-		StopTimeout:  10 * time.Second,
+		Enabled:          strings.ToLower(os.Getenv("SANDBOX_ENABLED")) != "false",
+		Image:            getenvOr("SANDBOX_IMAGE", "ubuntu:22.04"),
+		CPUs:             getenvOr("SANDBOX_CPUS", "1.0"),
+		Memory:           getenvOr("SANDBOX_MEMORY", "512m"),
+		PidsLimit:        256,
+		StartTimeout:     30 * time.Second,
+		StopTimeout:      10 * time.Second,
+		BootstrapCmd:     os.Getenv("SANDBOX_BOOTSTRAP_CMD"),
+		BootstrapTimeout: time.Duration(getenvIntOr("SANDBOX_BOOTSTRAP_TIMEOUT_SECS", 600)) * time.Second,
 	}
 }
 
@@ -44,6 +54,16 @@ func DefaultConfig() SandboxConfig {
 func getenvOr(key, fallback string) string {
 	if v := os.Getenv(key); v != "" {
 		return v
+	}
+	return fallback
+}
+
+// getenvIntOr 从环境变量读取整型 key，未设置/非法时返回 fallback。
+func getenvIntOr(key string, fallback int) int {
+	if v := os.Getenv(key); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			return n
+		}
 	}
 	return fallback
 }

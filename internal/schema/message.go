@@ -45,6 +45,12 @@ type Message struct {
 	// ToolCallID 用于 Observation（user 角色）消息中，标识此消息是对哪个 ToolCall
 	// 的响应（Request-Response 关联），使 LLM 能够将 Observation 与其原始请求进行匹配。
 	ToolCallID string `json:"tool_call_id,omitempty"`
+
+	// IsError 标记本条 Observation 是否为工具执行失败的结果。
+	// 仅对 ToolCallID 非空的工具结果消息有意义：Provider 据此向模型传递结构化错误信号
+	// （如 Anthropic 的 tool_result.is_error=true），强化模型的自愈（Self-Healing）行为，
+	// 而不仅依赖文本前缀 "Error executing..." 让模型自行解析。
+	IsError bool `json:"is_error,omitempty"`
 }
 
 // ToolCall 代表模型发出的单个工具调用请求。模型指定要调用的已注册工具名称，

@@ -11,7 +11,7 @@ import (
 	"github.com/harness9/internal/schema"
 )
 
-// TestToolCalling 运行工具调用准确性评估（4 个黄金用例）。
+// TestToolCalling 运行工具调用准确性评估（5 个黄金用例）。
 func TestToolCalling(t *testing.T) {
 	evals.SetupHermeticEnv(t)
 
@@ -74,6 +74,38 @@ func TestToolCalling(t *testing.T) {
 			Assertions: []evals.Assertion{
 				&evals.ToolCalledAssertion{ToolName: "write_file"},
 				&evals.ToolCalledAssertion{ToolName: "read_file"},
+				&evals.NoErrorAssertion{},
+				&evals.MaxTurnsAssertion{Max: 4},
+			},
+		},
+		// 用例5：edit_file 模糊匹配（缩进不一致触发 L4）端到端不破坏循环。
+		// 先 write_file 写入带 4/8 空格缩进的 Python 方法；随后 edit_file 用 0/4 缩进的
+		// source_text（与文件缩进不一致 → 走 L4 逐行去缩进匹配 + 重缩进），验证编辑成功、
+		// 引擎不因模糊匹配/缩进重排而报错（覆盖 fuzzyReplaceWithLevel + reindentBlock 路径）。
+		{
+			ID:       "tool_calling/edit_file_fuzzy_indent",
+			Category: "tool_calling",
+			Prompt:   "把 mod.py 中 compute 方法的返回值从 1 改成 2。",
+			Provider: evals.NewScriptedProvider(
+				evals.ScriptedTurn{
+					ToolCalls: []schema.ToolCall{
+						evals.MakeToolCall("tc1", "write_file",
+							`{"path":"mod.py","content":"class A:\n    def compute(self):\n        return 1\n"}`),
+					},
+				},
+				evals.ScriptedTurn{
+					ToolCalls: []schema.ToolCall{
+						// source_text 缩进（0/4）与文件（4/8）不一致 → 强制 L4 模糊匹配
+						evals.MakeToolCall("tc2", "edit_file",
+							`{"path":"mod.py","source_text":"def compute(self):\n    return 1","target_text":"def compute(self):\n    return 2"}`),
+					},
+				},
+				evals.ScriptedTurn{Text: "已将 compute 的返回值改为 2。"},
+			),
+			Assertions: []evals.Assertion{
+				&evals.ToolCalledAssertion{ToolName: "write_file"},
+				&evals.ToolCalledAssertion{ToolName: "edit_file"},
+				// 模糊匹配编辑成功不应让引擎报错（self-healing/正确性）
 				&evals.NoErrorAssertion{},
 				&evals.MaxTurnsAssertion{Max: 4},
 			},

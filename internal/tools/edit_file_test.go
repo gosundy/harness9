@@ -478,7 +478,7 @@ func TestFuzzyReplace_L4_LineByLineIndentDifference(t *testing.T) {
 func TestBuildEditSummary_SingleLineChange(t *testing.T) {
 	orig := "line1\nline2_old\nline3\n"
 	next := "line1\nline2_new\nline3\n"
-	out := buildEditSummary("foo.py", orig, next)
+	out := buildEditSummary("foo.py", orig, next, true)
 
 	if !strings.Contains(out, "- line2_old") {
 		t.Errorf("should show removed line, got: %s", out)
@@ -502,7 +502,7 @@ func TestBuildEditSummary_SingleLineChange(t *testing.T) {
 func TestBuildEditSummary_InsertionOnly(t *testing.T) {
 	orig := "line1\nline3\n"
 	next := "line1\nline2_inserted\nline3\n"
-	out := buildEditSummary("foo.py", orig, next)
+	out := buildEditSummary("foo.py", orig, next, true)
 
 	if !strings.Contains(out, "+ line2_inserted") {
 		t.Errorf("should show inserted line, got: %s", out)
@@ -517,7 +517,7 @@ func TestBuildEditSummary_InsertionOnly(t *testing.T) {
 func TestBuildEditSummary_DeletionOnly(t *testing.T) {
 	orig := "line1\nline2_removed\nline3\n"
 	next := "line1\nline3\n"
-	out := buildEditSummary("foo.py", orig, next)
+	out := buildEditSummary("foo.py", orig, next, true)
 
 	if !strings.Contains(out, "- line2_removed") {
 		t.Errorf("should show removed line, got: %s", out)
@@ -537,7 +537,7 @@ func TestBuildEditSummary_LargeChange(t *testing.T) {
 	}
 	orig := strings.Join(origLines, "\n")
 	next := strings.Join(nextLines, "\n")
-	out := buildEditSummary("big.py", orig, next)
+	out := buildEditSummary("big.py", orig, next, true)
 
 	if !strings.Contains(out, "删除") || !strings.Contains(out, "新增") {
 		t.Errorf("large diff should report line counts, got: %s", out)
@@ -548,11 +548,76 @@ func TestBuildEditSummary_LargeChange(t *testing.T) {
 	}
 }
 
+// TestFuzzyReplace_L4_PreservesBlockIndentation 验证 L4 缩进无关匹配命中后，
+// 模型提供的 target 会被重新缩进到被替换块的缩进层级（防止 Python IndentationError）。
+func TestFuzzyReplace_L4_PreservesBlockIndentation(t *testing.T) {
+	// 文件中方法体缩进 4/8 空格；source 用 0/4 空格触发 L4（逐行去缩进）匹配。
+	content := "class A:\n    def old(self):\n        return 1\n"
+	source := "def old(self):\n    return 1" // 缩进与文件不同 → 走 L4
+	// 模型给出的 target 以 0 缩进书写，依赖框架对齐到块基准缩进。
+	target := "def new(self):\n    return 2"
+
+	result, level, err := fuzzyReplaceWithLevel(content, source, target)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if level != matchLineByLine {
+		t.Fatalf("expected L4 match, got level %d (result=%q)", level, result)
+	}
+	// 被替换块首行原缩进为 4 空格 → def new 应为 4 空格，return 2 应为 8 空格。
+	if !strings.Contains(result, "\n    def new(self):\n") {
+		t.Errorf("def new 应重缩进到 4 空格基准，got:\n%s", result)
+	}
+	if !strings.Contains(result, "\n        return 2\n") {
+		t.Errorf("return 2 应重缩进到 8 空格（保留相对结构），got:\n%s", result)
+	}
+}
+
+// TestEditFile_FuzzyMatch_CautionBanner 验证模糊匹配（L3/L4）的成功提示
+// 不再声称"无需确认"，而是建议复核（避免在最该验证时抑制自愈）。
+func TestEditFile_FuzzyMatch_CautionBanner(t *testing.T) {
+	dir := t.TempDir()
+	// 文件缩进与 source 不同，强制走 L3/L4 模糊匹配。
+	content := "class A:\n    def m(self):\n        return 1\n"
+	if err := os.WriteFile(dir+"/a.py", []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+	tool := NewEditFileTool(dir)
+	// source 缩进与文件不同
+	args := json.RawMessage(`{"path":"a.py","source_text":"def m(self):\n    return 1","target_text":"def m(self):\n    return 2"}`)
+	out, err := tool.Execute(context.Background(), args)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if strings.Contains(out, "无需额外") {
+		t.Errorf("模糊匹配不应声称无需确认，got: %q", out)
+	}
+	if !strings.Contains(out, "模糊匹配") || !strings.Contains(out, "复核") {
+		t.Errorf("模糊匹配应提示复核，got: %q", out)
+	}
+}
+
+// TestEditFile_ExactMatch_AuthoritativeBanner 验证精确匹配仍声明权威无需复核。
+func TestEditFile_ExactMatch_AuthoritativeBanner(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(dir+"/a.txt", []byte("hello world\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	tool := NewEditFileTool(dir)
+	out, err := tool.Execute(context.Background(), json.RawMessage(`{"path":"a.txt","source_text":"world","target_text":"harness9"}`))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(out, "✓") || !strings.Contains(out, "精确匹配") {
+		t.Errorf("精确匹配应声明权威确认，got: %q", out)
+	}
+}
+
 // buildEditSummary：CRLF 文件归一化后正常展示
 func TestBuildEditSummary_CRLFContent(t *testing.T) {
 	orig := "line1\r\nline2_old\r\nline3\r\n"
 	next := "line1\r\nline2_new\r\nline3\r\n"
-	out := buildEditSummary("foo.py", orig, next)
+	out := buildEditSummary("foo.py", orig, next, true)
 
 	if !strings.Contains(out, "- line2_old") {
 		t.Errorf("CRLF: should show removed line, got: %s", out)

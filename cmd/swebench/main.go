@@ -49,9 +49,10 @@ func main() {
 	flag.StringVar(&cfg.OutputDir, "output", "./swebench-results", "输出目录")
 	flag.IntVar(&cfg.MaxTurns, "max-turns", 0, "每个 instance 最大 LLM Turn 数（0 = 沿用引擎默认值 500）")
 	flag.IntVar(&cfg.Parallel, "parallel", 1, "并发 instance 数")
-	flag.BoolVar(&cfg.Resume, "resume", false, "跳过已有结果的 instance（断点续跑）")
-	flag.IntVar(&cfg.TimeoutMins, "timeout", 10, "单个 instance 超时（分钟）")
+	flag.BoolVar(&cfg.Resume, "resume", false, "跳过已有非空结果的 instance（断点续跑）")
+	flag.IntVar(&cfg.TimeoutMins, "timeout", 30, "单个 instance 超时（分钟）")
 	flag.StringVar(&cfg.Model, "model", "", "LLM 模型名称（默认使用 LLM_MODEL 环境变量）")
+	flag.Int64Var(&cfg.Seed, "seed", 1, "按 repo 采样的随机种子（固定默认值保证可复现；同 seed → 同实例集）")
 	flag.Parse()
 
 	if cfg.DatasetPath == "" {
@@ -90,9 +91,9 @@ func main() {
 	modelName := resolveModelName(cfg.Model)
 	fmt.Fprintf(os.Stderr, "使用模型: %s\n", modelName)
 
-	// 按 repo 采样
-	instances := sampleByRepo(allInstances, cfg.SampleN, time.Now().UnixNano())
-	fmt.Fprintf(os.Stderr, "采样完成: %d 条（每 repo 最多 %d 条）\n", len(instances), cfg.SampleN)
+	// 按 repo 采样（固定 seed → 可复现；--resume 时同 seed 自然复现同一实例集）
+	instances := sampleByRepo(allInstances, cfg.SampleN, cfg.Seed)
+	fmt.Fprintf(os.Stderr, "采样完成: %d 条（每 repo 最多 %d 条，seed=%d）\n", len(instances), cfg.SampleN, cfg.Seed)
 
 	// 加载已有结果（--resume 模式）
 	predictionsPath := filepath.Join(cfg.OutputDir, "predictions.jsonl")
@@ -106,8 +107,13 @@ func main() {
 		fmt.Fprintf(os.Stderr, "断点续跑: 跳过 %d 个已有结果\n", len(skipIDs))
 	}
 
-	// 创建输出目录及 trajectory 日志子目录
-	if err := os.MkdirAll(filepath.Join(cfg.OutputDir, "logs"), 0755); err != nil {
+	// 为本次运行分配 RunID（时间戳），trajectory 日志写入 logs/<RunID>/，
+	// 避免多次运行的同名日志互相覆盖、污染后续分析。
+	cfg.RunID = time.Now().Format("20060102-150405")
+	fmt.Fprintf(os.Stderr, "本次运行 RunID: %s（日志目录 logs/%s/）\n", cfg.RunID, cfg.RunID)
+
+	// 创建输出目录及本次运行的 trajectory 日志子目录
+	if err := os.MkdirAll(filepath.Join(cfg.OutputDir, "logs", cfg.RunID), 0755); err != nil {
 		fmt.Fprintf(os.Stderr, "创建输出目录失败: %v\n", err)
 		os.Exit(1)
 	}
@@ -171,7 +177,7 @@ func main() {
 
 	// 写汇总
 	end := time.Now()
-	if err := writeSummary(cfg.OutputDir, results, start, end); err != nil {
+	if err := writeSummary(cfg, results, start, end); err != nil {
 		fmt.Fprintf(os.Stderr, "写入摘要失败: %v\n", err)
 	}
 

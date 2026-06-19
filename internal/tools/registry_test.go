@@ -27,6 +27,36 @@ func (t *testTool) Execute(_ context.Context, _ json.RawMessage) (string, error)
 	return t.output, t.err
 }
 
+// panicTool 在 Execute 时 panic，用于验证 Registry 的兜底 recover。
+type panicTool struct{ name string }
+
+func (t *panicTool) Name() string { return t.name }
+func (t *panicTool) Definition() schema.ToolDefinition {
+	return schema.ToolDefinition{Name: t.name, Description: "panics"}
+}
+func (t *panicTool) Execute(_ context.Context, _ json.RawMessage) (string, error) {
+	panic("boom")
+}
+
+// TestRegistry_Execute_RecoversPanic 验证工具内部 panic 被转换为 IsError 结果，
+// 而非让整个进程崩溃（并发执行时尤为关键）。
+func TestRegistry_Execute_RecoversPanic(t *testing.T) {
+	r := NewRegistry()
+	if err := r.Register(&panicTool{name: "boom"}); err != nil {
+		t.Fatal(err)
+	}
+	res := r.Execute(context.Background(), schema.ToolCall{ID: "c1", Name: "boom"})
+	if !res.IsError {
+		t.Error("panic 应转为 IsError 结果")
+	}
+	if !strings.Contains(res.Output, "panic") {
+		t.Errorf("结果应说明 panic，got: %q", res.Output)
+	}
+	if res.ToolCallID != "c1" {
+		t.Errorf("应保留 ToolCallID，got: %q", res.ToolCallID)
+	}
+}
+
 func TestNewRegistry_IsEmpty(t *testing.T) {
 	r := NewRegistry()
 	if defs := r.GetAvailableTools(); len(defs) != 0 {
