@@ -44,6 +44,21 @@ func WithContextWindow(tokens int) Option {
 	return func(e *AgentEngine) { e.contextWindow = tokens }
 }
 
+// WithGenerateRetry 配置 LLM 生成调用的应用层重试：最多尝试 attempts 次，
+// 首次重试退避 baseDelay，其后指数增长（上限 maxGenerateRetryDelay）。
+//
+// 这是对 SDK 内置重试的补充：SDK 的重试只覆盖"首字节到达前"的连接错误，
+// 而流式响应中途断连（mid-stream EOF / 代理超时 / 5xx after headers）会以
+// StreamChunkError 形式逃逸到引擎层，旧实现直接终止整个 agent loop（丢掉整条轨迹）。
+// 此重试在保持 context 取消语义的前提下，把"一次瞬时抖动杀实例"变为可恢复事件。
+// attempts<=1 时关闭重试（仅尝试一次）。
+func WithGenerateRetry(attempts int, baseDelay time.Duration) Option {
+	return func(e *AgentEngine) {
+		e.generateRetries = attempts
+		e.generateRetryBase = baseDelay
+	}
+}
+
 // WithMemoryNudge 配置长期记忆 nudge：每隔 interval 个 turn 在发送给 LLM 的历史中
 // 注入一行 text 提示（仅注入到临时副本，不持久化）。interval<=0 时关闭。
 func WithMemoryNudge(interval int, text string) Option {
@@ -131,21 +146,77 @@ type AgentEngine struct {
 	nudgeInterval      int                 // >0 时每隔该轮数注入一次记忆 nudge
 	nudgeText          string              // nudge 提示文本
 	observer           EngineObserver      // 可选，nil 时自动退化为 noopObserver
+	generateRetries    int                 // LLM 生成调用最大尝试次数（默认 3）
+	generateRetryBase  time.Duration       // 重试退避基准（默认 1s）
 }
 
-// NewAgentEngine 创建新的 AgentEngine。默认值：maxTurns=500, toolTimeout=60s。
+// maxGenerateRetryDelay 是生成重试指数退避的上限，避免退避时间吞掉整体预算。
+const maxGenerateRetryDelay = 30 * time.Second
+
+// NewAgentEngine 创建新的 AgentEngine。默认值：maxTurns=500, toolTimeout=60s,
+// generateRetries=3（base 1s）—— 对瞬时 LLM/流式错误具备基础韧性。
 func NewAgentEngine(p provider.LLMProvider, r tools.Registry, workDir string, opts ...Option) *AgentEngine {
 	e := &AgentEngine{
-		provider:    p,
-		registry:    r,
-		workDir:     workDir,
-		maxTurns:    500,
-		toolTimeout: 60 * time.Second,
+		provider:          p,
+		registry:          r,
+		workDir:           workDir,
+		maxTurns:          500,
+		toolTimeout:       60 * time.Second,
+		generateRetries:   3,
+		generateRetryBase: 1 * time.Second,
 	}
 	for _, opt := range opts {
 		opt(e)
 	}
 	return e
+}
+
+// generateWithRetry 在 em.generate 之上叠加有界指数退避重试。
+//
+// 重试策略：
+//   - 成功立即返回；
+//   - context 已取消/超时（ctx.Err()!=nil）不重试，原样返回（会话级终止信号）；
+//   - 其余错误视为可能瞬时，退避后重试，直到耗尽 attempts；
+//   - 退避期间感知 ctx 取消，避免无谓等待。
+func (e *AgentEngine) generateWithRetry(ctx context.Context, em emitter, turn int, history []schema.Message, toolDefs []schema.ToolDefinition) (*schema.Message, *schema.Usage, error) {
+	attempts := e.generateRetries
+	if attempts < 1 {
+		attempts = 1
+	}
+	base := e.generateRetryBase
+	if base <= 0 {
+		base = 1 * time.Second
+	}
+
+	var lastErr error
+	for attempt := 1; attempt <= attempts; attempt++ {
+		if ctx.Err() != nil {
+			return nil, nil, ctx.Err()
+		}
+		msg, usage, err := em.generate(ctx, turn, history, toolDefs)
+		if err == nil {
+			return msg, usage, nil
+		}
+		lastErr = err
+		// context 取消/超时不重试。
+		if ctx.Err() != nil {
+			return nil, nil, err
+		}
+		if attempt < attempts {
+			delay := base << (attempt - 1)
+			if delay > maxGenerateRetryDelay {
+				delay = maxGenerateRetryDelay
+			}
+			log.Print(logfmt.FormatMsg("engine", fmt.Sprintf(
+				"LLM 生成失败 (turn %d, 尝试 %d/%d)，%s 后重试: %v", turn, attempt, attempts, delay, err)))
+			select {
+			case <-ctx.Done():
+				return nil, nil, ctx.Err()
+			case <-time.After(delay):
+			}
+		}
+	}
+	return nil, nil, lastErr
 }
 
 // emitter 封装 Run 与 RunStream 在"输出侧"的差异：
@@ -324,7 +395,7 @@ func (e *AgentEngine) runLoop(ctx context.Context, userPrompt string, logPrefix 
 		log.Print(logfmt.FormatTurnStart(logPrefix, turnCount, len(compactedHistory), len(availableTools)))
 
 		llmStart := time.Now()
-		responseMsg, usage, err := em.generate(turnCtx, turnCount, compactedHistory, availableTools)
+		responseMsg, usage, err := e.generateWithRetry(turnCtx, em, turnCount, compactedHistory, availableTools)
 		if err != nil {
 			interactionErr = err
 			return fmt.Errorf("模型生成失败 (turn %d): %w", turnCount, err)
@@ -349,10 +420,18 @@ func (e *AgentEngine) runLoop(ctx context.Context, userPrompt string, logPrefix 
 		toolDuration := time.Since(toolStart)
 
 		for i, toolCall := range responseMsg.ToolCalls {
+			// 空输出兜底：部分 backend 拒绝空 content 的 tool_result（返回 400，
+			// 在无重试时直接杀实例），且空 Observation 无信息可供模型推理、浪费一轮。
+			content := results[i].Output
+			if content == "" {
+				content = "[工具执行完成，无输出]"
+			}
 			contextHistory = append(contextHistory, schema.Message{
 				Role:       schema.RoleUser,
-				Content:    results[i].Output,
+				Content:    content,
 				ToolCallID: toolCall.ID,
+				// 透传结构化错误信号，供 Provider 设置 tool_result.is_error，强化自愈。
+				IsError: results[i].IsError,
 			})
 		}
 

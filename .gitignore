@@ -42,3 +42,7 @@ logs/
 
 # SWE-bench 数据集文件（体积大，不纳入版本控制）
 swe-bench-lite.jsonl
+
+# SWE-bench 运行产物（predictions / trajectory 日志 / run_summary / 官方评分 JSON），均为生成物
+swebench-results/
+*.harness9-lite-*.json

@@ -13,6 +13,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -24,8 +25,9 @@ import (
 )
 
 // maxReadLen 单次文件读取的最大字节数（Max Read Bytes）。
-// 未指定 limit 参数时的默认上限。
-const maxReadLen = 4096
+// 未指定 limit 参数时的默认上限。SWE-bench 源文件普遍较大，4096 字节（约 60-80 行）
+// 会造成频繁分页（每次一个 LLM turn），故提高到 8192。
+const maxReadLen = 8192
 
 // ReadFileTool 实现了 BaseTool 接口，提供受限工作区内的安全文件读取能力。
 type ReadFileTool struct {
@@ -60,9 +62,9 @@ func (t *ReadFileTool) Definition() schema.ToolDefinition {
 	return schema.ToolDefinition{
 		Name: t.Name(),
 		Description: "读取指定路径的文件内容。" +
-			"推荐使用 start_line/end_line 按行号读取片段（最直观）；" +
-			"也支持 offset/limit 字节偏移分页。" +
-			"注意：offset/limit 单位为字节，不是行号。",
+			"推荐使用 start_line/end_line 按行号读取片段（最直观）：返回的每行带 `行号→Tab→内容` 前缀，便于定位。" +
+			"⚠️ 行号前缀仅供显示，调用 edit_file 时 source_text 必须是不含行号前缀的原始代码。" +
+			"也支持 offset/limit 字节偏移分页（单位为字节，不是行号）。",
 		InputSchema: map[string]interface{}{
 			"type": "object",
 			"properties": map[string]interface{}{
@@ -103,7 +105,8 @@ type readFileArgs struct {
 }
 
 // maxLineRead 行号模式下单次最多读取的行数（防止大文件占满上下文）。
-const maxLineRead = 200
+// 200 行对 SWE-bench 大源文件偏小、需多次往返；提高到 500 行减少分页抖动。
+const maxLineRead = 500
 
 // Execute 执行文件读取操作，支持行号模式（start_line/end_line）和字节偏移模式（offset/limit）。
 // 设置了 start_line 时优先走行号模式。
@@ -209,10 +212,17 @@ func readFileByLines(fullPath string, startLine, endLine int) (string, error) {
 			truncated = true
 			break
 		}
-		sb.WriteString(scanner.Text())
-		sb.WriteByte('\n')
+		// 每行带 1-based 行号前缀（`行号→Tab→内容`），便于 LLM 精确定位、
+		// 减少 edit_file 的多匹配失败。行号仅供显示，调用 edit_file 时
+		// source_text 不应包含该前缀（见 Definition 说明）。
+		fmt.Fprintf(&sb, "%6d\t%s\n", lineNum, scanner.Text())
 	}
 	if err := scanner.Err(); err != nil {
+		// 单行超过 scanner 缓冲（>512KB，如压缩/生成代码、长 JSON）时优雅降级，
+		// 提示改用字节模式，而非抛出难以理解的通用错误。
+		if errors.Is(err, bufio.ErrTooLong) {
+			return "", fmt.Errorf("文件含超长行（>512KB），行号模式不支持；请改用 offset/limit 字节模式读取该文件")
+		}
 		return "", fmt.Errorf("读取文件失败: %w", err)
 	}
 

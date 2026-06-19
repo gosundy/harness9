@@ -14,11 +14,16 @@ import (
 
 	"github.com/harness9/internal/engine"
 	"github.com/harness9/internal/hooks"
+	"github.com/harness9/internal/memory"
 	"github.com/harness9/internal/provider"
 	"github.com/harness9/internal/sandbox"
 	"github.com/harness9/internal/schema"
 	"github.com/harness9/internal/tools"
 )
+
+// benchmarkBashTimeout 是 SWE-bench 场景下单条 bash 命令的超时。
+// 远大于默认 120s，使 Agent 能运行较慢的测试套件 / 依赖安装（验证修复的关键路径）。
+const benchmarkBashTimeout = 300 * time.Second
 
 // Config 存储从 CLI flags 解析的运行配置。
 type Config struct {
@@ -31,6 +36,11 @@ type Config struct {
 	Resume      bool
 	TimeoutMins int
 	Model       string
+	// Seed 是按 repo 采样的随机种子。固定默认值保证基准可复现（同 seed → 同实例集），
+	// 修复了此前用 time.Now().UnixNano() 导致每次运行抽样不同、无法对比迭代效果的问题。
+	Seed int64
+	// RunID 标识本次运行，用于将 trajectory 日志写入 logs/<RunID>/，避免多次运行互相覆盖/污染。
+	RunID string
 }
 
 // resolveModelName 解析最终使用的模型名：cfg.Model > LLM_MODEL 环境变量 > 默认值。
@@ -110,7 +120,8 @@ func runInstance(ctx context.Context, inst Instance, cfg Config) RunResult {
 	// 4. 注册工具
 	registry := tools.NewRegistry()
 	toolList := []tools.BaseTool{
-		tools.NewBashTool(tmpDir, tools.WithEnvironment(env)),
+		// 放宽 bash 超时（默认 120s → 300s），让真实测试套件 / 依赖安装得以完成。
+		tools.NewBashTool(tmpDir, tools.WithEnvironment(env), tools.WithBashTimeout(benchmarkBashTimeout)),
 		tools.NewReadFileTool(tmpDir, tools.ReadFileWithEnvironment(env)),
 		tools.NewWriteFileTool(tmpDir, tools.WriteFileWithEnvironment(env)),
 		tools.NewEditFileTool(tmpDir, tools.EditFileWithEnvironment(env)),
@@ -128,11 +139,30 @@ func runInstance(ctx context.Context, inst Instance, cfg Config) RunResult {
 	if err != nil {
 		return RunResult{Instance: inst, Error: fmt.Errorf("创建 LLM provider 失败: %w", err), Duration: time.Since(start)}
 	}
+	// 上下文窗口与压缩器：此前 benchmark 未配置 compactor，长轨迹上下文无界增长，
+	// 触及模型窗口后 API 返回 400（prompt too long），在无重试时直接杀实例。
+	// 这里用无需 LLM、无需 session 的 TokenBudgetCompactor 做字符级裁剪；
+	// 预算取上下文窗口的 55%，为工具定义(~25K) + 输出预留 + chars/4 估算误差留足余量。
+	lim := provider.GetModelLimits(resolveModelName(cfg.Model))
+	compactor := &memory.TokenBudgetCompactor{
+		MaxTokens:       lim.ContextTokens * 55 / 100,
+		MinTailMessages: 8,
+	}
 	engOpts := []engine.Option{
 		engine.WithPromptBuilder(&swebenchPromptBuilder{instance: inst, workDir: tmpDir}),
+		engine.WithContextWindow(lim.ContextTokens),
+		engine.WithCompactor(compactor),
+		// 无人值守：显式短路审批，零延迟（不依赖是否注册了 hook）。
+		engine.WithPermissionMode(engine.PermissionModeBypassAll),
+		// 瞬时 LLM/流式错误的应用层重试：把"一次抖动杀实例"变为可恢复事件。
+		engine.WithGenerateRetry(4, 2*time.Second),
 	}
 	if cfg.MaxTurns > 0 {
 		engOpts = append(engOpts, engine.WithMaxTurns(cfg.MaxTurns))
+	} else {
+		// benchmark 默认上限 80 轮：足够 explore+fix+verify，又能截断失控循环
+		// （此前沿用引擎默认 500，配合每实例超时会在卡死实例上烧掉大量 token）。
+		engOpts = append(engOpts, engine.WithMaxTurns(80))
 	}
 	eng := engine.NewAgentEngine(llm, hookReg, tmpDir, engOpts...)
 
@@ -140,13 +170,18 @@ func runInstance(ctx context.Context, inst Instance, cfg Config) RunResult {
 	instanceCtx, instanceCancel := context.WithTimeout(ctx, time.Duration(cfg.TimeoutMins)*time.Minute)
 	defer instanceCancel()
 
-	// logs/ 目录由 main.go 在进入并发循环前统一创建（os.MkdirAll），此处无需再建。
-	logPath := filepath.Join(cfg.OutputDir, "logs", inst.InstanceID+".log")
+	// logs/<RunID>/ 目录由 main.go 在进入并发循环前统一创建（os.MkdirAll），此处无需再建。
+	// 按 RunID 命名空间隔离，避免不同运行的同名日志互相覆盖、污染分析。
+	logPath := filepath.Join(cfg.OutputDir, "logs", cfg.RunID, inst.InstanceID+".log")
 	runErr := runWithTrajectory(instanceCtx, eng, "请修复上述 Issue。", logPath, inst)
 
 	// 7. 收集 patch（无论 runErr 如何，MaxTurns 触发时也可能有部分 patch）
-	diffCtx, diffCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	// 先 `git add -A -N`（intent-to-add）登记新建文件：纯 `git diff` 只输出已跟踪文件的改动，
+	// Agent 用 write_file 新建的修复文件不会出现在 diff 中而被静默丢弃。-N 使新文件以
+	// 新增 hunk 形式进入 `git diff`，从而被完整捕获进 model_patch。
+	diffCtx, diffCancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer diffCancel()
+	_ = exec.CommandContext(diffCtx, "git", "-C", tmpDir, "add", "-A", "-N").Run()
 	patchOut, _ := exec.CommandContext(diffCtx, "git", "-C", tmpDir, "diff").CombinedOutput()
 	patch := strings.TrimSpace(string(patchOut))
 

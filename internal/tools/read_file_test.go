@@ -173,6 +173,31 @@ func TestReadFileTool_Execute_StartEndLine(t *testing.T) {
 	}
 }
 
+// TestReadFileTool_LineNumbers 验证行号模式为每行加 `行号→Tab→内容` 前缀，
+// 便于 LLM 精确定位、减少 edit_file 多匹配失败。
+func TestReadFileTool_LineNumbers(t *testing.T) {
+	dir := t.TempDir()
+	content := "alpha\nbeta\ngamma\n"
+	if err := os.WriteFile(dir+"/f.txt", []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+	tool := NewReadFileTool(dir)
+	out, err := tool.Execute(context.Background(), json.RawMessage(`{"path":"f.txt","start_line":1,"end_line":3}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 每行应带行号与 Tab 分隔；第 2 行内容为 beta。
+	if !strings.Contains(out, "\tbeta") {
+		t.Errorf("行号模式应以 Tab 分隔行号与内容，got: %q", out)
+	}
+	if !strings.Contains(out, "2\tbeta") {
+		t.Errorf("beta 应标注为第 2 行，got: %q", out)
+	}
+	if !strings.Contains(out, "1\talpha") || !strings.Contains(out, "3\tgamma") {
+		t.Errorf("应包含第 1、3 行行号，got: %q", out)
+	}
+}
+
 func TestReadFileTool_Execute_StartLineOnly(t *testing.T) {
 	dir := t.TempDir()
 	var lines []string

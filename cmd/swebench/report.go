@@ -12,8 +12,12 @@ import (
 	"time"
 )
 
-// loadExistingIDs 读取已有的 predictions.jsonl，返回已处理的 instance_id 集合。
+// loadExistingIDs 读取已有的 predictions.jsonl，返回"已成功产出非空 patch"的 instance_id 集合。
 // 文件不存在时返回空 map（不报错），支持首次运行。
+//
+// 仅当 model_patch 非空时才视为"已完成"并在 --resume 时跳过；空 patch（Agent 无改动、
+// 或瞬时错误/环境失败被记为空）不计入，从而在续跑时获得重试机会——修复了此前
+// "最该重跑的失败实例反被永久跳过"的问题。
 func loadExistingIDs(path string) (map[string]bool, error) {
 	ids := make(map[string]bool)
 	f, err := os.Open(path)
@@ -25,9 +29,11 @@ func loadExistingIDs(path string) (map[string]bool, error) {
 	}
 	defer f.Close()
 	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, 1024*1024), 10*1024*1024) // patch 可能较大，扩大缓冲避免长行截断
 	for scanner.Scan() {
 		var p Prediction
-		if err := json.Unmarshal([]byte(scanner.Text()), &p); err == nil && p.InstanceID != "" {
+		if err := json.Unmarshal([]byte(scanner.Text()), &p); err == nil &&
+			p.InstanceID != "" && strings.TrimSpace(p.ModelPatch) != "" {
 			ids[p.InstanceID] = true
 		}
 	}
@@ -51,6 +57,8 @@ func appendPrediction(path string, p Prediction) error {
 
 const summaryTmpl = `# SWE-bench Lite Run Summary
 
+- RunID: {{.RunID}}
+- 采样 seed: {{.Seed}}（同 seed 可复现同一实例集）
 - 开始时间: {{.StartTime}}
 - 结束时间: {{.EndTime}}
 - 总实例数: {{.Total}}
@@ -87,6 +95,8 @@ type repoStats struct {
 }
 
 type summaryData struct {
+	RunID      string
+	Seed       int64
 	StartTime  string
 	EndTime    string
 	Total      int
@@ -96,10 +106,12 @@ type summaryData struct {
 	Repos      []repoStats
 }
 
-// writeSummary 将运行摘要写入 outputDir/run_summary.md。
-func writeSummary(outputDir string, results []RunResult, start, end time.Time) error {
+// writeSummary 将运行摘要写入 cfg.OutputDir/run_summary.md，记录 RunID 与 seed 以支持复现。
+func writeSummary(cfg Config, results []RunResult, start, end time.Time) error {
 	byRepo := make(map[string]*repoStats)
 	sd := summaryData{
+		RunID:     cfg.RunID,
+		Seed:      cfg.Seed,
 		StartTime: start.Format("2006-01-02 15:04:05"),
 		EndTime:   end.Format("2006-01-02 15:04:05"),
 		Total:     len(results),
@@ -135,5 +147,5 @@ func writeSummary(outputDir string, results []RunResult, start, end time.Time) e
 	if err := tmpl.Execute(&sb, sd); err != nil {
 		return err
 	}
-	return os.WriteFile(filepath.Join(outputDir, "run_summary.md"), []byte(sb.String()), 0644)
+	return os.WriteFile(filepath.Join(cfg.OutputDir, "run_summary.md"), []byte(sb.String()), 0644)
 }

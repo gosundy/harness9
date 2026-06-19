@@ -170,10 +170,20 @@ runInstance(ctx, inst, cfg)
 |------|------|
 | git clone 在宿主机执行 | 容器内无 git credential，bind mount 后容器可见相同文件 |
 | bash 工具路由进容器 | Agent 执行的 Python 代码在隔离环境中运行，不污染宿主机 |
+| bash 超时放宽至 300s | 默认 120s 仍不足以跑完测试套件/装依赖；runner 通过 `WithBashTimeout` 提到 300s，模型亦可用 `timeout_secs` 临时放宽（验证修复的关键路径）|
+| 收集 patch 前先 `git add -A -N` | 纯 `git diff` 只输出已跟踪文件，Agent 用 write_file 新建的修复文件会被静默丢弃；intent-to-add 使新文件进入 diff |
 | git diff 用独立 context | Ctrl+C 取消主 context 后，仍能收集已修改的 patch，避免丢弃有效结果 |
-| MaxTurns 默认沿用引擎值（500） | SWE-bench 复杂任务不应被过早截断，使用 `--max-turns N` 显式限制 |
-| RunStream 替代 Run | 以事件流方式捕获完整 trajectory，写入 `logs/` 目录供后续分析 |
+| 显式接入 Compactor + ContextWindow | 此前未配置压缩器，长轨迹上下文无界增长触及窗口 → API 400 杀实例；runner 用无需 LLM/Session 的 `TokenBudgetCompactor`（预算取窗口 55%，为工具定义+输出+估算误差留余量）|
+| 引擎级生成重试 `WithGenerateRetry(4, 2s)` | SDK 重试只覆盖首字节前；流式中途断连/瞬时 429 会逃逸到引擎层杀实例。应用层有界退避重试把"一次抖动杀实例"变为可恢复事件 |
+| `WithPermissionMode(BypassAll)` | 无人值守显式短路审批，零延迟，不依赖是否注册 hook |
+| MaxTurns benchmark 默认 80 | 此前沿用引擎 500，卡死实例会在每实例超时内烧掉大量 token；80 足够 explore+fix+verify 又能截断失控循环（如观测到的 69 轮 runaway）。仍可用 `--max-turns N` 覆盖 |
+| 单实例超时默认 30 分钟 | 原 10 分钟需覆盖 clone+sandbox 启动+整段 agent loop，对大仓库偏紧 |
+| 采样种子固定（`--seed`，默认 1）| 原用 `time.Now().UnixNano()` 导致每次运行抽样不同、无法复现/对比；固定 seed → 同实例集，`--resume` 自然一致 |
+| 日志按 RunID 命名空间隔离 | `logs/<RunID>/<instance>.log`，避免多次运行同名日志互相覆盖、污染分析 |
+| `--resume` 仅跳过非空 patch | 原按 instance_id 跳过且接受空 patch，导致最该重跑的失败实例被永久跳过；改为仅跳过已产出非空 patch 的实例 |
+| RunStream 替代 Run | 以事件流方式捕获完整 trajectory，写入 `logs/<RunID>/` 目录供后续分析 |
 | predictions.jsonl 追加写 | 每条完成后立即 flush，配合 `--resume` 支持断点续跑 |
+| Sandbox 依赖 bootstrap 钩子（接缝）| `SANDBOX_BOOTSTRAP_CMD` 在容器就绪后、Agent 开始前执行一次（独立超时预算）；为接入官方 SWE-bench 每实例预装镜像（彻底打开"跑真实测试"验证能力）只差配置 |
 
 ### 3.3 采样策略
 
@@ -195,7 +205,7 @@ allInstances (300条)
 
 ### 3.4 专用 System Prompt 设计
 
-harness9 为 SWE-bench 设计了专用的 system prompt，策略为：
+harness9 为 SWE-bench 设计了专用的 system prompt（英文，提升英文代码任务质量），策略为：
 
 **结构化流程约束（5 步顺序）+ 每步内自由探索（不限制工具调用方式）**
 
@@ -204,22 +214,26 @@ Step 1 — 理解问题
   ↓ 识别 bug 核心、复现步骤、预期行为
 
 Step 2 — 探索仓库
-  ↓ find/grep 定位相关文件，阅读源码（不读测试文件）
+  ↓ grep 定位相关文件，read_file 行号读取；并行多工具调用
+  ↓ 阅读（绝不修改）相关现有测试——它们编码了维护者期望的行为/输出/边界
 
-Step 3 — 复现
-  ↓ 写最简复现脚本，用 bash 验证 bug 存在
+Step 3 — 复现（可行时）
+  ↓ python 可用且包可 import 时写最简复现；用 heredoc 执行，绝不在仓库内建临时 .py（污染 patch）
 
 Step 4 — 修复
-  ↓ 最小化改动，绝不修改测试文件，不引入新依赖
+  ↓ 最小化改动，绝不修改测试文件，不引入新依赖；编辑前 grep -n 定位精确行号
 
-Step 5 — 验证
-  ↓ 重跑复现脚本，确认 bug 消失
+Step 5 — 验证（行为而非语法）
+  ↓ edit_file 的 diff 只确认"字节已写入"，不代表行为正确
+  ↓ 尽量运行真实测试 / 复现脚本验证行为；绝不"把类/函数原样重抄到内联脚本里自测"
 ```
 
 **约束的设计原则**：
-- "不修改测试文件"是 SWE-bench 的硬约束，违反会导致评估结果无效
+- "不修改测试文件"是 SWE-bench 的硬约束，违反会导致评估结果无效；但**鼓励阅读**现有测试（最强行为信号）
 - "最小化改动"减少误改不相关代码引入回归的风险
-- 结构化步骤确保 Agent 不跳过复现步骤直接猜测修复，提升修复质量
+- **行为验证优先于语法验证**：早期 prompt 的"验证至多 1-2 步 / diff 即权威无需复验"会诱发 plausible-but-wrong 的过度修复（轨迹分析中多个失败由此而来），已改为鼓励运行真实测试、禁止内联重抄自测的假验证
+- **文件工具一律用相对路径**：注入的绝对工作目录曾诱使模型给 read_file/edit_file 传绝对路径，触发路径拼接错误（已在 `safePath` 修复，并以 prompt 双重保险）
+- 推理语言改为英文 + 单行防漂移约束（评测只看 patch，英文更贴合英文代码/Issue/堆栈）
 
 ### 3.5 并发控制与韧性
 
@@ -248,10 +262,11 @@ writeSummary(...)
 |------|---------|
 | git clone 失败 | 记录 Error，写空 patch，继续下一条 |
 | Docker 启动失败 | 同上 |
-| LLM API 超时/限流 | 同上；若有部分 patch 则保留 |
-| MaxTurns 触发 | 收集当前 git diff，不标记为错误 |
+| LLM API 瞬时错误/限流/流式断连 | 引擎级有界退避重试（`WithGenerateRetry`）+ SDK 内置重试；多数瞬时抖动可恢复，不再杀实例 |
+| 上下文逼近窗口 | `TokenBudgetCompactor` 在窗口 55% 处裁剪旧 Observation，规避 400 溢出 |
+| MaxTurns 触发（默认 80）| 收集当前 git diff（含 `git add -N` 的新文件），不标记为错误 |
 | 整体 Ctrl+C | 等待当前 instance 完成，收集 patch 后退出 |
-| `--resume` 重启 | 读取已有 predictions.jsonl，跳过已处理 instance_id |
+| `--resume` 重启 | 仅跳过**已产出非空 patch** 的 instance；空/出错实例会被重试 |
 
 ---
 
@@ -462,10 +477,11 @@ go run ./cmd/swebench --help
 | `--dataset` | string | **必填** | SWE-bench Lite JSONL 文件路径 |
 | `--sample` | int | 10 | 每个 repo 抽取的 instance 数量（≥1）|
 | `--output` | string | `./swebench-results` | 输出目录 |
-| `--max-turns` | int | 0 | 每个 instance 最大 Turn 数（0 = 引擎默认 500）|
+| `--max-turns` | int | 0 | 每个 instance 最大 Turn 数（0 = benchmark 默认 80；显式 N 覆盖）|
 | `--parallel` | int | 1 | 并发 instance 数（≥1）|
-| `--resume` | bool | false | 跳过已有结果（断点续跑）|
-| `--timeout` | int | 10 | 单个 instance 超时（分钟）|
+| `--resume` | bool | false | 跳过已产出非空 patch 的 instance（断点续跑）|
+| `--timeout` | int | 30 | 单个 instance 超时（分钟）|
+| `--seed` | int64 | 1 | 按 repo 采样的随机种子（固定默认值保证可复现；同 seed → 同实例集）|
 | `--model` | string | `""` | LLM 模型（空则读 `LLM_MODEL` 环境变量）|
 
 **环境变量**（可通过 `.env` 文件或系统环境变量提供，系统变量优先）：
@@ -475,8 +491,12 @@ go run ./cmd/swebench --help
 | `OPENAI_API_KEY` | LLM API Key（必填）| — |
 | `OPENAI_BASE_URL` | 自定义 API 地址（可选）| `https://openrouter.ai/api/v1` |
 | `LLM_MODEL` | 模型名称 | `openai/gpt-4o` |
+| `LLM_REQUEST_TIMEOUT_SECS` | 单次 LLM 请求超时（秒）| `600`（默认）|
+| `LLM_MAX_RETRIES` | SDK 内置重试次数（429/5xx）| `5`（默认）|
 | `SANDBOX_IMAGE` | Docker 镜像 | `python:3.11-slim` |
 | `SANDBOX_ENABLED` | 启用 Docker 隔离 | `true`（默认）|
+| `SANDBOX_BOOTSTRAP_CMD` | 容器就绪后执行一次的初始化命令（装依赖/激活环境）| 如 `pip install -e . -q` |
+| `SANDBOX_BOOTSTRAP_TIMEOUT_SECS` | bootstrap 命令超时（秒）| `600`（默认）|
 
 ---
 

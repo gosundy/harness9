@@ -13,6 +13,7 @@ package engine
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -90,6 +91,84 @@ func (r *errorRegistry) Register(_ tools.BaseTool) error            { return nil
 func (r *errorRegistry) GetAvailableTools() []schema.ToolDefinition { return r.tools }
 func (r *errorRegistry) Execute(_ context.Context, call schema.ToolCall) schema.ToolResult {
 	return schema.ToolResult{ToolCallID: call.ID, Output: "command not found", IsError: true}
+}
+
+// flakyProvider 在前 failFirst 次调用返回错误，其后正常返回 done，用于验证引擎重试。
+type flakyProvider struct {
+	mu        sync.Mutex
+	calls     int
+	failFirst int
+	err       error
+}
+
+func (p *flakyProvider) Generate(_ context.Context, _ []schema.Message, _ []schema.ToolDefinition) (*schema.Message, *schema.Usage, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.calls++
+	if p.calls <= p.failFirst {
+		return nil, nil, p.err
+	}
+	return &schema.Message{Role: schema.RoleAssistant, Content: "done!"}, nil, nil
+}
+
+func (p *flakyProvider) GenerateStream(ctx context.Context, msgs []schema.Message, td []schema.ToolDefinition) (<-chan schema.StreamChunk, error) {
+	msg, _, err := p.Generate(ctx, msgs, td)
+	if err != nil {
+		return nil, err
+	}
+	ch := make(chan schema.StreamChunk, 2)
+	go func() {
+		defer close(ch)
+		ch <- schema.StreamChunk{Type: schema.StreamChunkDone, Message: msg}
+	}()
+	return ch, nil
+}
+
+// TestGenerateRetry_RecoversFromTransientError 验证：瞬时 LLM 错误经有界重试后恢复，
+// 整条轨迹不被一次抖动杀死。
+func TestGenerateRetry_RecoversFromTransientError(t *testing.T) {
+	p := &flakyProvider{failFirst: 2, err: fmt.Errorf("temporary stream reset")}
+	r := &staticRegistry{output: "ok"}
+	// 3 次尝试、极小退避（避免拖慢测试）。
+	eng := NewAgentEngine(p, r, "/test", WithGenerateRetry(3, time.Millisecond))
+
+	if err := eng.Run(context.Background(), "task"); err != nil {
+		t.Fatalf("应在重试后成功，got: %v", err)
+	}
+	if p.calls != 3 {
+		t.Errorf("应尝试 3 次（前 2 次失败 + 第 3 次成功），实际 %d", p.calls)
+	}
+}
+
+// TestGenerateRetry_ExhaustsThenFails 验证：持续失败时耗尽重试后返回错误（有界）。
+func TestGenerateRetry_ExhaustsThenFails(t *testing.T) {
+	p := &flakyProvider{failFirst: 100, err: fmt.Errorf("persistent failure")}
+	r := &staticRegistry{output: "ok"}
+	eng := NewAgentEngine(p, r, "/test", WithGenerateRetry(3, time.Millisecond))
+
+	err := eng.Run(context.Background(), "task")
+	if err == nil {
+		t.Fatal("持续失败应最终返回错误")
+	}
+	if p.calls != 3 {
+		t.Errorf("应恰好尝试 3 次后放弃，实际 %d", p.calls)
+	}
+}
+
+// TestGenerateRetry_DoesNotRetryOnContextCancel 验证：context 取消不触发重试。
+func TestGenerateRetry_DoesNotRetryOnContextCancel(t *testing.T) {
+	p := &flakyProvider{failFirst: 100, err: fmt.Errorf("should not be seen")}
+	r := &staticRegistry{output: "ok"}
+	eng := NewAgentEngine(p, r, "/test", WithGenerateRetry(5, time.Second))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_ = eng.Run(ctx, "task")
+	// ctx 已取消：要么在 turn 入口的 ctx.Done 检查就退出（calls==0），
+	// 要么首次 generate 后因 ctx.Err()!=nil 立即返回（calls<=1）。绝不应多次重试。
+	if p.calls > 1 {
+		t.Errorf("context 取消不应重试，calls=%d", p.calls)
+	}
 }
 
 // TestReact_BasicFlow 验证单阶段 ReAct 的完整流程：

@@ -8,6 +8,7 @@ import (
 	"log"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/harness9/internal/logfmt"
 )
@@ -62,12 +63,36 @@ func (m *Manager) Create(ctx context.Context, workDir string) (Environment, erro
 		return nil, fmt.Errorf("sandbox: 启动容器失败: %w", err)
 	}
 
+	env := newDockerEnvironment(c.DockerID(), id, workDir, run)
+
+	// 依赖 bootstrap：容器就绪后、Agent 开始前执行一次初始化命令（如安装项目依赖），
+	// 在独立的较长预算内运行，不受单条 bash 命令超时约束。fail-open：失败仅告警、不阻断创建
+	// （Agent 仍可静态分析；接入官方预装镜像后此步通常无需执行）。
+	if cmd := strings.TrimSpace(m.cfg.BootstrapCmd); cmd != "" {
+		m.runBootstrap(env, cmd, workDir)
+	}
+
 	m.mu.Lock()
 	m.containers[id] = c
 	m.mu.Unlock()
 
 	m.notify()
-	return newDockerEnvironment(c.DockerID(), id, workDir, run), nil
+	return env, nil
+}
+
+// runBootstrap 在独立的 BootstrapTimeout 预算内执行一次性初始化命令（fail-open）。
+func (m *Manager) runBootstrap(env Environment, cmd, workDir string) {
+	timeout := m.cfg.BootstrapTimeout
+	if timeout <= 0 {
+		timeout = 10 * time.Minute
+	}
+	log.Print(logfmt.FormatMsg("sandbox", fmt.Sprintf("执行 bootstrap（超时 %s）: %s", timeout, cmd)))
+	bootCtx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	// DockerEnvironment.RunBash 始终返回 err==nil（错误转为输出字符串），故仅作记录。
+	if _, err := env.RunBash(bootCtx, cmd, workDir); err != nil {
+		log.Print(logfmt.FormatMsg("sandbox", fmt.Sprintf("bootstrap 出错（fail-open，继续）: %v", err)))
+	}
 }
 
 // Destroy 停止并移除指定 Sandbox。ID 不存在时静默返回 nil。

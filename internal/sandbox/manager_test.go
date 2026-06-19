@@ -3,9 +3,62 @@ package sandbox
 
 import (
 	"context"
+	"strings"
 	"sync"
 	"testing"
+	"time"
 )
+
+// TestManager_BootstrapCmd_Runs 验证：配置 BootstrapCmd 时，容器就绪后通过 docker exec
+// 执行一次该命令（接入官方预装镜像 / 依赖安装的关键接缝）。
+func TestManager_BootstrapCmd_Runs(t *testing.T) {
+	cfg := testCfg()
+	cfg.BootstrapCmd = "pip install -e . -q"
+	cfg.BootstrapTimeout = 5 * time.Second
+	mgr := NewManager(cfg)
+
+	var mock *mockCmdRunner
+	mgr.runnerFactory = func(id, workDir string, c SandboxConfig) cmdRunner {
+		mock = newMock(
+			id[:8], errNil(), // docker run
+			"true", errNil(), // docker inspect → running
+			"ok", errNil(), // bootstrap docker exec
+		)
+		return mock.run
+	}
+	if _, err := mgr.Create(context.Background(), t.TempDir()); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	found := false
+	for _, call := range mock.Calls {
+		joined := strings.Join(call, " ")
+		if strings.Contains(joined, "exec") && strings.Contains(joined, "pip install -e . -q") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("bootstrap 命令应通过 docker exec 执行，Calls=%v", mock.Calls)
+	}
+}
+
+// TestManager_NoBootstrapByDefault 验证：默认（BootstrapCmd 为空）不触发任何 exec 调用。
+func TestManager_NoBootstrapByDefault(t *testing.T) {
+	mgr := newTestManager() // testCfg 不设 BootstrapCmd
+	var mock *mockCmdRunner
+	mgr.runnerFactory = func(id, workDir string, c SandboxConfig) cmdRunner {
+		mock = newMock(id[:8], errNil(), "true", errNil())
+		return mock.run
+	}
+	if _, err := mgr.Create(context.Background(), t.TempDir()); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	for _, call := range mock.Calls {
+		if len(call) > 0 && call[0] == "exec" {
+			t.Errorf("未配置 BootstrapCmd 时不应有 exec 调用，Calls=%v", mock.Calls)
+		}
+	}
+}
 
 // newTestManager 创建使用 mock runner 的 Manager，不真实启动 Docker。
 func newTestManager() *Manager {

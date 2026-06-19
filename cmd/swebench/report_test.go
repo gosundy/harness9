@@ -20,9 +20,12 @@ func TestLoadExistingIDsEmpty(t *testing.T) {
 	}
 }
 
+// TestLoadExistingIDs 验证 --resume 跳过逻辑：仅"已产出非空 patch"的实例算完成并被跳过；
+// 空 patch（无改动 / 瞬时失败被记空）不计入，从而在续跑时获得重试机会。
 func TestLoadExistingIDs(t *testing.T) {
 	content := `{"instance_id":"django__django-1","model_patch":"diff ..."}
 {"instance_id":"astropy__astropy-2","model_patch":""}
+{"instance_id":"flask__flask-3","model_patch":"   "}
 `
 	tmp := filepath.Join(t.TempDir(), "predictions.jsonl")
 	if err := os.WriteFile(tmp, []byte(content), 0644); err != nil {
@@ -33,10 +36,14 @@ func TestLoadExistingIDs(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if !ids["django__django-1"] {
-		t.Error("want django__django-1 in existing IDs")
+		t.Error("非空 patch 的实例应被视为已完成（跳过）")
 	}
-	if !ids["astropy__astropy-2"] {
-		t.Error("want astropy__astropy-2 in existing IDs")
+	// 空 / 纯空白 patch 不应被跳过——这些正是最该重跑的实例。
+	if ids["astropy__astropy-2"] {
+		t.Error("空 patch 实例不应被跳过，应在 --resume 时重试")
+	}
+	if ids["flask__flask-3"] {
+		t.Error("纯空白 patch 实例不应被跳过，应在 --resume 时重试")
 	}
 	if ids["unknown"] {
 		t.Error("want unknown NOT in existing IDs")
@@ -83,7 +90,8 @@ func TestWriteSummary(t *testing.T) {
 	}
 	start := time.Now().Add(-5 * time.Minute)
 	end := time.Now()
-	if err := writeSummary(outDir, results, start, end); err != nil {
+	cfg := Config{OutputDir: outDir, Seed: 7, RunID: "20260619-000000"}
+	if err := writeSummary(cfg, results, start, end); err != nil {
 		t.Fatalf("writeSummary error: %v", err)
 	}
 	data, err := os.ReadFile(filepath.Join(outDir, "run_summary.md"))
@@ -96,5 +104,12 @@ func TestWriteSummary(t *testing.T) {
 	}
 	if !strings.Contains(content, "django/django") {
 		t.Error("summary should contain django/django repo")
+	}
+	// 记录 RunID 与 seed 以支持复现
+	if !strings.Contains(content, "20260619-000000") {
+		t.Error("summary should record RunID")
+	}
+	if !strings.Contains(content, "seed: 7") {
+		t.Error("summary should record sampling seed")
 	}
 }

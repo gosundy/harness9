@@ -13,59 +13,80 @@ func TestSwebenchPromptBuilder(t *testing.T) {
 	b := &swebenchPromptBuilder{instance: inst, workDir: "/tmp/swebench-test"}
 	prompt := b.Build()
 
+	// 占位符注入
 	if !strings.Contains(prompt, inst.ProblemStatement) {
 		t.Error("prompt should contain the problem statement")
 	}
 	if strings.Contains(prompt, "{{PROBLEM_STATEMENT}}") {
 		t.Error("prompt should not contain unreplaced placeholder")
 	}
-	if !strings.Contains(prompt, "Step 1") {
-		t.Error("prompt should contain structured workflow steps")
-	}
-	if !strings.Contains(prompt, "不修改测试文件") {
-		t.Error("prompt should contain constraint about not modifying test files")
-	}
-	// 语言锁定（P2：防止语言漂移）
-	if !strings.Contains(prompt, "语言要求") {
-		t.Error("prompt should contain language requirement")
-	}
-	// Python 快速放弃策略（P0：杜绝死循环搜索）
-	if !strings.Contains(prompt, "NO_PYTHON") {
-		t.Error("prompt should contain NO_PYTHON fast-detection pattern")
-	}
-	// 新版：立即跳过 Step 3 全部内容
-	if !strings.Contains(prompt, "立即跳过 Step 3 全部内容") {
-		t.Error("prompt should contain instruction to skip step 3 immediately")
-	}
-	// workDir 注入（P0：消除 /repo 路径假设）
 	if !strings.Contains(prompt, "/tmp/swebench-test") {
 		t.Error("prompt should contain the injected workDir")
 	}
 	if strings.Contains(prompt, "{{WORK_DIR}}") {
 		t.Error("prompt should not contain unreplaced WORK_DIR placeholder")
 	}
-	// bash 超时约束说明
-	if !strings.Contains(prompt, "30 秒") {
-		t.Error("prompt should mention 30s bash timeout")
+
+	// 结构化工作流
+	if !strings.Contains(prompt, "Step 1") || !strings.Contains(prompt, "Step 5") {
+		t.Error("prompt should contain structured workflow steps")
 	}
-	// 先规划后编辑（P1：减少 edit_file 反复撤回）
-	if !strings.Contains(prompt, "在调用任何编辑工具之前") {
-		t.Error("prompt should contain plan-before-edit instruction")
+
+	// 约束：不修改测试文件
+	if !strings.Contains(prompt, "Never modify test files") {
+		t.Error("prompt should contain constraint about not modifying test files")
 	}
-	// 验证上限（P2：杜绝过度验证）
-	if !strings.Contains(prompt, "验证至多 1-2 步") {
-		t.Error("prompt should contain max verification steps constraint")
+
+	// 英文推理 + 单行防漂移
+	if !strings.Contains(prompt, "Reason and respond in English") {
+		t.Error("prompt should mandate English reasoning with anti-drift line")
 	}
-	// edit_file diff 可信度声明
-	if !strings.Contains(prompt, "diff 即为权威确认") {
-		t.Error("prompt should declare diff as authoritative")
+
+	// 相对路径强约束（修复 safePath 路径翻倍的诱因）
+	if !strings.Contains(prompt, "relative to the working directory") {
+		t.Error("prompt should require relative paths for file tools")
 	}
-	// 禁止 sed 读文件，引导使用 read_file
+	if !strings.Contains(prompt, "NEVER pass an absolute path") {
+		t.Error("prompt should forbid absolute paths to file tools")
+	}
+
+	// 行为验证而非语法验证（核心修复：杜绝 plausible-but-wrong 过度修复）
+	if !strings.Contains(prompt, "does NOT prove the behavior is correct") {
+		t.Error("prompt should reframe verification as behavioral, not syntactic")
+	}
+	// 禁止内联重抄自测的假验证
+	if !strings.Contains(prompt, "re-implementing the class/function inline") {
+		t.Error("prompt should forbid fake verification via inline re-implementation")
+	}
+
+	// 阅读现有测试（最强行为信号）
+	if !strings.Contains(prompt, "never modify — the existing tests") {
+		t.Error("prompt should encourage reading existing tests")
+	}
+
+	// heredoc 跑复现，禁止在仓库内建临时文件污染 patch
+	if !strings.Contains(prompt, "heredoc") {
+		t.Error("prompt should instruct running repros via heredoc")
+	}
+	if !strings.Contains(prompt, "corrupt the final patch") {
+		t.Error("prompt should warn that scratch files corrupt the patch")
+	}
+
+	// read_file 行号模式 + 并发探索
 	if !strings.Contains(prompt, "start_line") {
 		t.Error("prompt should mention read_file start_line parameter")
 	}
-	// 并发工具调用引导（P3）
-	if !strings.Contains(prompt, "尽量同时发起多个工具调用") {
+	if !strings.Contains(prompt, "multiple tool calls in parallel") {
 		t.Error("prompt should encourage concurrent tool calls")
+	}
+
+	// timeout_secs 放宽慢命令
+	if !strings.Contains(prompt, "timeout_secs") {
+		t.Error("prompt should mention per-call timeout_secs for slow commands")
+	}
+
+	// 不应再保留旧的"放弃验证"反模式
+	if strings.Contains(prompt, "diff 即为权威确认") || strings.Contains(prompt, "验证至多 1-2 步") {
+		t.Error("prompt should no longer contain the discourage-verification anti-pattern")
 	}
 }
