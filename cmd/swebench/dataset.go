@@ -9,6 +9,7 @@ import (
 	"math/rand"
 	"os"
 	"sort"
+	"strings"
 	"time"
 )
 
@@ -19,6 +20,35 @@ type Instance struct {
 	BaseCommit       string `json:"base_commit"`
 	ProblemStatement string `json:"problem_statement"`
 	HintsText        string `json:"hints_text"`
+	// Version / EnvironmentSetupCommit 用于为每实例 provision 正确的运行环境
+	// （选对 Python 版本、定位安装规范）；接入官方每实例镜像时按 Version 选 tag。
+	Version                string `json:"version"`
+	EnvironmentSetupCommit string `json:"environment_setup_commit"`
+	// FailToPass / PassToPass 是评测目标测试的 JSON 编码字符串（形如 `["a::b"]`），
+	// 用 parseTestIDs 解析为 []string。⚠️ 这些测试由 test_patch 在评测阶段注入，
+	// 不在 Agent 运行时的工作区中——仅用于运行后分析/调试，**绝不**在 Agent 运行时暴露或应用，
+	// 以保持 SWE-bench 评测协议（隐藏测试）不被污染。
+	FailToPass string `json:"FAIL_TO_PASS"`
+	PassToPass string `json:"PASS_TO_PASS"`
+	// TestPatch 是评测阶段注入的隐藏测试补丁。同样**绝不**在 Agent 运行时应用。
+	TestPatch string `json:"test_patch"`
+}
+
+// parseTestIDs 把 SWE-bench 中"JSON 编码为字符串的测试 ID 数组"（如 `["a::b","c::d"]`）
+// 解析为 []string。空字符串、空数组或非法 JSON 均返回 nil（容错，调用方据空判断不可用）。
+func parseTestIDs(s string) []string {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return nil
+	}
+	var ids []string
+	if err := json.Unmarshal([]byte(s), &ids); err != nil {
+		return nil
+	}
+	if len(ids) == 0 {
+		return nil
+	}
+	return ids
 }
 
 // Prediction 是写入 predictions.jsonl 的一条记录（官方兼容格式）。

@@ -762,3 +762,96 @@ func TestRunLoop_PlanMode_FiltersWriteTools(t *testing.T) {
 		t.Error("todo_write should be visible in PlanMode (needed to write the plan)")
 	}
 }
+
+// readToolCall 返回一个调用只读工具 read_file 的助手响应（非"进展"工具）。
+func readToolCall(_ []schema.ToolDefinition) *schema.Message {
+	return &schema.Message{
+		Role:      schema.RoleAssistant,
+		ToolCalls: []schema.ToolCall{{ID: "c", Name: "read_file", Arguments: []byte(`{}`)}},
+	}
+}
+
+// editToolCall 返回一个调用 edit_file 的助手响应（"进展"工具，应重置停滞计数）。
+func editToolCall(_ []schema.ToolDefinition) *schema.Message {
+	return &schema.Message{
+		Role:      schema.RoleAssistant,
+		ToolCalls: []schema.ToolCall{{ID: "c", Name: "edit_file", Arguments: []byte(`{}`)}},
+	}
+}
+
+func finalText(_ []schema.ToolDefinition) *schema.Message {
+	return &schema.Message{Role: schema.RoleAssistant, Content: "done"}
+}
+
+func nudgeAppeared(prov *countingProvider, text string) bool {
+	prov.mu.Lock()
+	defer prov.mu.Unlock()
+	for _, c := range prov.calls {
+		for _, m := range c.messages {
+			if strings.Contains(m.Content, text) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// TestStallNudge_InjectedAfterWindowWithoutProgress 验证：连续 window 轮没有任何"进展工具"
+// （edit_file/write_file）调用后，引擎向发送给 LLM 的历史副本注入一次停滞提示。
+func TestStallNudge_InjectedAfterWindowWithoutProgress(t *testing.T) {
+	const nudge = "【停滞提示】你已多轮未做改动，请运行测试或定稿。"
+	prov := &countingProvider{responses: []func([]schema.ToolDefinition) *schema.Message{
+		readToolCall, readToolCall, readToolCall, readToolCall, finalText,
+	}}
+	reg := &staticRegistry{tools: []schema.ToolDefinition{{Name: "read_file"}, {Name: "edit_file"}}, output: "ok"}
+	eng := NewAgentEngine(prov, reg, "/tmp", WithStallNudge(3, nudge))
+
+	if err := eng.Run(context.Background(), "go"); err != nil {
+		t.Fatalf("Run 失败: %v", err)
+	}
+	if !nudgeAppeared(prov, nudge) {
+		t.Error("连续多轮无进展工具后应注入停滞提示，但历史中未出现")
+	}
+}
+
+// TestStallNudge_ResetByProgressTool 验证：只要在 window 内调用过进展工具（edit_file），
+// 停滞计数被重置，不会触发停滞提示。
+func TestStallNudge_ResetByProgressTool(t *testing.T) {
+	const nudge = "【停滞提示】不应出现"
+	prov := &countingProvider{responses: []func([]schema.ToolDefinition) *schema.Message{
+		readToolCall, editToolCall, readToolCall, editToolCall, readToolCall, finalText,
+	}}
+	reg := &staticRegistry{tools: []schema.ToolDefinition{{Name: "read_file"}, {Name: "edit_file"}}, output: "ok"}
+	eng := NewAgentEngine(prov, reg, "/tmp", WithStallNudge(3, nudge))
+
+	if err := eng.Run(context.Background(), "go"); err != nil {
+		t.Fatalf("Run 失败: %v", err)
+	}
+	if nudgeAppeared(prov, nudge) {
+		t.Error("进展工具应重置停滞计数，不应注入停滞提示")
+	}
+}
+
+// TestStallNudge_NotPersisted 验证停滞提示只注入临时副本，绝不持久化到会话。
+func TestStallNudge_NotPersisted(t *testing.T) {
+	const nudge = "【停滞提示】请勿落盘"
+	prov := &countingProvider{responses: []func([]schema.ToolDefinition) *schema.Message{
+		readToolCall, readToolCall, readToolCall, readToolCall, finalText,
+	}}
+	reg := &staticRegistry{tools: []schema.ToolDefinition{{Name: "read_file"}, {Name: "edit_file"}}, output: "ok"}
+	sess := newMemorySessionForTest("stall-sess")
+	eng := NewAgentEngine(prov, reg, "/tmp", WithStallNudge(3, nudge), WithSession(sess))
+
+	if err := eng.Run(context.Background(), "go"); err != nil {
+		t.Fatalf("Run 失败: %v", err)
+	}
+	msgs, err := sess.GetMessages(context.Background(), 0)
+	if err != nil {
+		t.Fatalf("GetMessages 失败: %v", err)
+	}
+	for _, m := range msgs {
+		if strings.Contains(m.Content, nudge) {
+			t.Errorf("停滞提示不应被持久化，却出现在: %q", m.Content)
+		}
+	}
+}

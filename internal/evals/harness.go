@@ -90,9 +90,9 @@ func RunCase(ctx context.Context, c *Case) Result {
 	}
 	hookReg := hooks.NewHookRegistry(registry, recorder)
 
-	eng := engine.NewAgentEngine(c.Provider, hookReg, workDir,
-		engine.WithMaxTurns(maxTurns),
-	)
+	// 基础选项 + Case 附加选项（如 WithStallNudge）。附加选项置于其后，可覆盖默认。
+	engOpts := append([]engine.Option{engine.WithMaxTurns(maxTurns)}, c.EngineOptions...)
+	eng := engine.NewAgentEngine(c.Provider, hookReg, workDir, engOpts...)
 
 	runErr := eng.Run(ctx, c.Prompt)
 	finalOutput := extractFinalOutput(c.Provider)

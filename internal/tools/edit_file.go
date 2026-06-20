@@ -223,7 +223,9 @@ func buildEditSummary(path, originalContent, newContent string, exactMatch bool)
 		fmt.Fprintf(&sb, "  %s\n", origLines[i])
 	}
 	if exactMatch {
-		fmt.Fprint(&sb, "---\n✓ 精确匹配，以上 diff 已确认改动落地，无需额外 grep/sed/read_file 再次确认。")
+		// 仅声明"字节已写入"，不暗示"行为已验证"：避免抑制后续的真实行为验证（自愈的关键反馈）。
+		fmt.Fprint(&sb, "---\n✓ 精确匹配，以上 diff 已确认字节写入，无需再 grep/read_file 确认本次改动是否落地。"+
+			"但这只代表「写入成功」，不代表行为正确——请运行真实测试或复现脚本来验证修复行为。")
 	} else {
 		fmt.Fprint(&sb, "---\n⚠️ 本次为模糊匹配（换行/空白/缩进经过容错处理），写入字节可能与预期略有出入。"+
 			"建议用 read_file 复核改动处的缩进与上下文是否正确（尤其 Python 等缩进敏感语言）。")

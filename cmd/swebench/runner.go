@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -24,6 +25,68 @@ import (
 // benchmarkBashTimeout 是 SWE-bench 场景下单条 bash 命令的超时。
 // 远大于默认 120s，使 Agent 能运行较慢的测试套件 / 依赖安装（验证修复的关键路径）。
 const benchmarkBashTimeout = 300 * time.Second
+
+// benchmarkMaxTurns 是 benchmark 默认 Turn 上限：足够 explore+fix+verify，又能截断失控循环。
+const benchmarkMaxTurns = 80
+
+// stallNudgeWindow 是停滞提示窗口：连续该轮数未做任何改动（无 edit/write）即注入一次提示，
+// 打断"反复静态重读却不收敛"的空转（轨迹分析 R6：xarray-3364、pylint-7080 烧满 80 轮即此形态）。
+const stallNudgeWindow = 10
+
+// stallNudgeText 是停滞时注入的提示（仅作用于发送给 LLM 的临时副本，不持久化）。
+const stallNudgeText = "你已连续多轮只在静态读代码 / grep，却没有做任何改动或运行测试。请立刻二选一：" +
+	"(1) 运行与改动相关的真实测试以获取反馈；(2) 若已定位问题，做出最小修改后用真实测试验证。不要继续空转重读。"
+
+// verifyGateText 是验证关卡续跑提示：当整条轨迹从未运行过任何测试便自然结束时注入一次，
+// 要求 Agent 真正验证后再收尾（轨迹分析 R2：8/8 失败实例均零验证即交卷）。
+const verifyGateText = "你似乎尚未运行过任何测试就准备结束。请先在沙箱里复现该 Issue，并运行与你改动相关的现有测试来验证修复是否真的生效" +
+	"（必要时用 `python -m ensurepip --upgrade && python -m pip install -e . pytest` 安装依赖、用 timeout_secs 放宽超时）。" +
+	"验证通过、或确认环境确实无法运行测试并说明原因后，再结束。"
+
+// testRunnerTokens 是判定一条 bash 命令"是否在运行测试"的子串特征（小写匹配）。
+var testRunnerTokens = []string{
+	"pytest", "py.test", "-m unittest", "unittest discover",
+	"nosetests", "runtests.py", "setup.py test", "manage.py test",
+	"django-admin test", "tox",
+}
+
+// looksLikeTestRun 用启发式判断 cmd 是否在运行测试套件，用于验证关卡。
+// 这是宽松启发式：先排除明显的安装语境（pip install，其中也含 pytest）与只读探索命令
+// （grep/cat/ls/find/head/tail 开头），再匹配测试运行特征子串。偏向"宁可少判"——
+// 漏判仅多一次温和提示，误判才会跳过本应有的验证提示。
+func looksLikeTestRun(cmd string) bool {
+	c := strings.ToLower(cmd)
+	if strings.Contains(c, "pip install") || strings.Contains(c, "pip3 install") {
+		return false
+	}
+	trimmed := strings.TrimSpace(c)
+	for _, ro := range []string{"grep ", "cat ", "ls ", "find ", "head ", "tail "} {
+		if strings.HasPrefix(trimmed, ro) {
+			return false
+		}
+	}
+	for _, tok := range testRunnerTokens {
+		if strings.Contains(c, tok) {
+			return true
+		}
+	}
+	return false
+}
+
+// defaultBootstrapCmd 返回"可配置·默认自举"路线下的默认依赖安装命令（接通 sandbox.BootstrapCmd 接缝）：
+// 恢复 pip（精简镜像可能无 pip）→ 以 editable 模式安装当前仓库及其依赖 → 确保 pytest 存在。
+// 全程 best-effort（manager.runBootstrap 内 fail-open）：装不全时 Agent 仍可继续，但绝大多数
+// 纯 Python 仓库（flask/requests/pylint/sphinx/pytest 等）与带 wheel 的依赖（numpy/pandas 等）
+// 都能就此可运行真实测试。需要本机编译器的仓库可改用官方每实例镜像（设 SANDBOX_IMAGE）。
+//
+// inst 暂未使用，保留以便将来按 EnvironmentSetupCommit / Version 做每实例定制。
+func defaultBootstrapCmd(inst Instance) string {
+	return strings.Join([]string{
+		"python -m ensurepip --upgrade >/dev/null 2>&1 || true",
+		"python -m pip install -e . -q 2>&1 | tail -n 20 || true",
+		"python -m pip install -q pytest 2>&1 | tail -n 5 || true",
+	}, " ; ")
+}
 
 // Config 存储从 CLI flags 解析的运行配置。
 type Config struct {
@@ -93,11 +156,18 @@ func runInstance(ctx context.Context, inst Instance, cfg Config) RunResult {
 
 	// 3. 创建 Docker Sandbox 环境
 	// SWE-bench 仓库需要 Python 环境；若用户未通过 SANDBOX_IMAGE 显式覆盖，
-	// 强制使用 python:3.11-slim 替代默认的 ubuntu:22.04，
-	// 避免 Agent 在无 Python 的容器中陷入无效的解释器搜索死循环。
+	// 默认使用 python:3.11（非 slim：自带 pip 与更全的运行库，便于 editable 安装与
+	// 从 wheel 拉取 numpy/pandas 等依赖），替代默认的 ubuntu:22.04。
+	// 需要本机编译器的仓库（如 astropy C 扩展）可设 SANDBOX_IMAGE 指向官方每实例镜像。
 	sandboxCfg := sandbox.DefaultConfig()
 	if os.Getenv("SANDBOX_IMAGE") == "" {
-		sandboxCfg.Image = "python:3.11-slim"
+		sandboxCfg.Image = "python:3.11"
+	}
+	// 依赖自举（接通已存在的 BootstrapCmd 接缝）：用户未显式提供 SANDBOX_BOOTSTRAP_CMD 时，
+	// 注入默认的 editable 安装命令，让真实测试在 Agent 启动前即变得可运行——这是恢复
+	// 验证闭环、把"纯静态分析蒙答案"变为"真实测试驱动收敛"的决定性一步（轨迹分析 R1）。
+	if strings.TrimSpace(sandboxCfg.BootstrapCmd) == "" {
+		sandboxCfg.BootstrapCmd = defaultBootstrapCmd(inst)
 	}
 	// macOS Docker Desktop 用 VirtioFS 处理 bind mount，大型 git repo 的 volume
 	// 注册比 Linux 慢，30s（默认值）容易触发超时；扩大到 90s 留足缓冲。
@@ -148,21 +218,27 @@ func runInstance(ctx context.Context, inst Instance, cfg Config) RunResult {
 		MaxTokens:       lim.ContextTokens * 55 / 100,
 		MinTailMessages: 8,
 	}
+	// 内存会话：承载验证关卡的多轮续跑（第二次 RunStream 复用全部历史继续对话）。
+	// 纯内存、随实例生命周期销毁，不落盘。
+	sess := memory.NewMemorySession("swebench-" + inst.InstanceID)
 	engOpts := []engine.Option{
 		engine.WithPromptBuilder(&swebenchPromptBuilder{instance: inst, workDir: tmpDir}),
 		engine.WithContextWindow(lim.ContextTokens),
 		engine.WithCompactor(compactor),
+		engine.WithSession(sess),
 		// 无人值守：显式短路审批，零延迟（不依赖是否注册了 hook）。
 		engine.WithPermissionMode(engine.PermissionModeBypassAll),
 		// 瞬时 LLM/流式错误的应用层重试：把"一次抖动杀实例"变为可恢复事件。
 		engine.WithGenerateRetry(4, 2*time.Second),
+		// 停滞提示：连续多轮无改动/无测试运行时注入一次提示，打断盲目空转（轨迹分析 R6）。
+		engine.WithStallNudge(stallNudgeWindow, stallNudgeText),
 	}
 	if cfg.MaxTurns > 0 {
 		engOpts = append(engOpts, engine.WithMaxTurns(cfg.MaxTurns))
 	} else {
-		// benchmark 默认上限 80 轮：足够 explore+fix+verify，又能截断失控循环
+		// benchmark 默认上限：足够 explore+fix+verify，又能截断失控循环
 		// （此前沿用引擎默认 500，配合每实例超时会在卡死实例上烧掉大量 token）。
-		engOpts = append(engOpts, engine.WithMaxTurns(80))
+		engOpts = append(engOpts, engine.WithMaxTurns(benchmarkMaxTurns))
 	}
 	eng := engine.NewAgentEngine(llm, hookReg, tmpDir, engOpts...)
 
@@ -173,7 +249,7 @@ func runInstance(ctx context.Context, inst Instance, cfg Config) RunResult {
 	// logs/<RunID>/ 目录由 main.go 在进入并发循环前统一创建（os.MkdirAll），此处无需再建。
 	// 按 RunID 命名空间隔离，避免不同运行的同名日志互相覆盖、污染分析。
 	logPath := filepath.Join(cfg.OutputDir, "logs", cfg.RunID, inst.InstanceID+".log")
-	runErr := runWithTrajectory(instanceCtx, eng, "请修复上述 Issue。", logPath, inst)
+	runErr := runWithVerificationGate(instanceCtx, eng, "请修复上述 Issue。", logPath, inst)
 
 	// 7. 收集 patch（无论 runErr 如何，MaxTurns 触发时也可能有部分 patch）
 	// 先 `git add -A -N`（intent-to-add）登记新建文件：纯 `git diff` 只输出已跟踪文件的改动，
@@ -191,10 +267,11 @@ func runInstance(ctx context.Context, inst Instance, cfg Config) RunResult {
 	return RunResult{Instance: inst, Patch: patch, Duration: time.Since(start)}
 }
 
-// runWithTrajectory 通过 RunStream 执行 agent loop，将所有事件以可读格式写入 logPath。
-// 日志文件创建失败时 fail-open：agent 仍正常运行，只是不写日志。
-// Benchmark 场景下自动批准所有工具审批请求（无人值守）。
-func runWithTrajectory(ctx context.Context, eng *engine.AgentEngine, userPrompt, logPath string, inst Instance) error {
+// runWithVerificationGate 执行 agent loop 并将完整 trajectory 写入 logPath，
+// 在 Agent 自然结束却"全程未运行过任何测试"时，注入一次续跑提示要求真实验证（验证关卡，
+// 轨迹分析 R2）。续跑复用同一引擎 + 内存会话（历史完整延续），且至多一次，由 per-instance
+// 超时与 turn 上限共同兜底，避免在不可运行环境里 livelock。日志文件创建失败时 fail-open。
+func runWithVerificationGate(ctx context.Context, eng *engine.AgentEngine, userPrompt, logPath string, inst Instance) error {
 	// 创建日志文件（fail-open：失败时写入 Discard，agent 继续运行）
 	var w io.Writer = io.Discard
 	if lf, err := os.Create(logPath); err == nil {
@@ -209,14 +286,30 @@ func runWithTrajectory(ctx context.Context, eng *engine.AgentEngine, userPrompt,
 	fmt.Fprintf(w, "BaseCommit:  %s\n", inst.BaseCommit)
 	fmt.Fprintf(w, "StartTime:   %s\n\n", time.Now().Format("2006-01-02 15:04:05"))
 
+	ranTest, runErr := streamOnce(ctx, eng, w, userPrompt)
+
+	// 验证关卡：Agent 已自然结束（ctx 未取消）但全程未运行任何测试 → 注入一次续跑提示。
+	if !ranTest && ctx.Err() == nil {
+		fmt.Fprint(w, "\n\n=== 验证关卡：未检测到任何测试运行，注入续跑提示要求真实验证 ===\n")
+		ranTest2, err2 := streamOnce(ctx, eng, w, verifyGateText)
+		runErr = errors.Join(runErr, err2)
+		if !ranTest2 {
+			fmt.Fprint(w, "\n\n=== 验证关卡：续跑后仍未运行测试（可能环境无法运行或 Agent 坚持静态分析）===\n")
+		}
+	}
+
+	return runErr
+}
+
+// streamOnce 驱动一次 RunStream，把所有事件以可读格式写入 w，并返回本次是否运行过测试。
+// ranTest 通过对 bash 工具调用的 command 应用 looksLikeTestRun 启发式判定。
+func streamOnce(ctx context.Context, eng *engine.AgentEngine, w io.Writer, userPrompt string) (ranTest bool, runErr error) {
 	stream, err := eng.RunStream(ctx, userPrompt)
 	if err != nil {
-		return err
+		return false, err
 	}
 
 	currentTurn := 0
-	var runErr error
-
 	for evt := range stream {
 		// 新 Turn 时打印分隔符
 		if evt.Turn > 0 && evt.Turn != currentTurn {
@@ -229,12 +322,21 @@ func runWithTrajectory(ctx context.Context, eng *engine.AgentEngine, userPrompt,
 			fmt.Fprint(w, evt.Data.(string))
 
 		case engine.EventThinkingDelta:
-			// thinking 内容用 <thinking> 标记，便于后处理过滤
 			fmt.Fprint(w, evt.Data.(string))
 
 		case engine.EventToolStart:
 			tc := evt.Data.(schema.ToolCall)
 			fmt.Fprintf(w, "\n\n[Tool Call: %s]\n%s\n", tc.Name, string(tc.Arguments))
+			// 验证关卡信号：检测 bash 是否在运行测试（解析 command 字段后判定，避免误把
+			// `grep pytest` 当成测试运行）。
+			if tc.Name == "bash" {
+				var a struct {
+					Command string `json:"command"`
+				}
+				if json.Unmarshal(tc.Arguments, &a) == nil && looksLikeTestRun(a.Command) {
+					ranTest = true
+				}
+			}
 
 		case engine.EventToolResult:
 			trd := evt.Data.(engine.ToolResultData)
@@ -267,5 +369,5 @@ func runWithTrajectory(ctx context.Context, eng *engine.AgentEngine, userPrompt,
 		}
 	}
 
-	return runErr
+	return ranTest, runErr
 }
