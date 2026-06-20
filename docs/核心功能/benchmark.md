@@ -183,7 +183,11 @@ runInstance(ctx, inst, cfg)
 | `--resume` 仅跳过非空 patch | 原按 instance_id 跳过且接受空 patch，导致最该重跑的失败实例被永久跳过；改为仅跳过已产出非空 patch 的实例 |
 | RunStream 替代 Run | 以事件流方式捕获完整 trajectory，写入 `logs/<RunID>/` 目录供后续分析 |
 | predictions.jsonl 追加写 | 每条完成后立即 flush，配合 `--resume` 支持断点续跑 |
-| Sandbox 依赖 bootstrap 钩子（接缝）| `SANDBOX_BOOTSTRAP_CMD` 在容器就绪后、Agent 开始前执行一次（独立超时预算）；为接入官方 SWE-bench 每实例预装镜像（彻底打开"跑真实测试"验证能力）只差配置 |
+| **默认依赖自举（接通 bootstrap 接缝）** | runner 现在为每实例默认设置 `BootstrapCmd`（`ensurepip` + `pip install -e .` + `pytest`），在 Agent 启动前把"真实测试"变得可运行——**恢复验证闭环**（轨迹分析 R1：此前 24/24 实例零测试运行，全靠静态分析）。`SANDBOX_BOOTSTRAP_CMD` 显式设置后覆盖默认；需编译器的仓库可设 `SANDBOX_IMAGE` 指向官方每实例镜像 |
+| **默认镜像改为 `python:3.11`（非 slim）** | slim 常缺 pip、运行库不全；full 镜像自带 pip 并能从 wheel 拉取 numpy/pandas 等依赖，配合默认自举即可跑真实测试（轨迹分析 R1） |
+| **验证关卡（verification gate）** | Agent 自然结束却"全程未运行任何测试"时，runner 注入**一次**续跑提示要求真实验证（复用同一引擎 + 内存会话延续历史，至多一次，受超时/turn 上限兜底）。修复"9 轮静态自证即交卷"（轨迹分析 R2：8/8 失败实例均零验证即交卷）|
+| **停滞提示 `WithStallNudge(10, …)`** | 连续 10 轮无任何改动/测试运行（只在静态重读/grep 空转）时，引擎注入一次提示打断空转（轨迹分析 R6：xarray-3364、pylint-7080 烧满 80 轮即此形态）。仅作用于临时副本，不持久化 |
+| **注入 `hints_text` + dataset 解析评测字段** | `Instance` 现解析 `version`/`environment_setup_commit`/`FAIL_TO_PASS`/`test_patch`；prompt 注入维护者讨论（hints），它常含决定性 API 设计（轨迹分析 R3：flask `text=True`、xarray DeprecationWarning）。⚠️ `FAIL_TO_PASS`/`test_patch` 仅供分析，**绝不**在 Agent 运行时暴露/应用 |
 
 ### 3.3 采样策略
 
@@ -221,17 +225,21 @@ Step 3 — 复现（可行时）
   ↓ python 可用且包可 import 时写最简复现；用 heredoc 执行，绝不在仓库内建临时 .py（污染 patch）
 
 Step 4 — 修复
-  ↓ 最小化改动，绝不修改测试文件，不引入新依赖；编辑前 grep -n 定位精确行号
+  ↓ 在产生错误行为的"那一行"（raise/return/分支）做最小修改，不新增并行代码路径、
+  ↓ 不把分配/别名提到循环外（plausible-but-broader 改动常过不了隐藏测试）
+  ↓ 按"被改符号名"grep 测试并阅读；歧义/意外 API 行为优先查项目的 DeprecationWarning 约定
+  ↓ 绝不修改测试文件，不引入新依赖；编辑前 grep -n 定位精确行号
 
 Step 5 — 验证（行为而非语法）
   ↓ edit_file 的 diff 只确认"字节已写入"，不代表行为正确
-  ↓ 尽量运行真实测试 / 复现脚本验证行为；绝不"把类/函数原样重抄到内联脚本里自测"
+  ↓ 运行真实测试 / 复现脚本验证行为；绝不"把类/函数原样重抄到内联脚本里自测"
 ```
 
 **约束的设计原则**：
-- "不修改测试文件"是 SWE-bench 的硬约束，违反会导致评估结果无效；但**鼓励阅读**现有测试（最强行为信号）
-- "最小化改动"减少误改不相关代码引入回归的风险
-- **行为验证优先于语法验证**：早期 prompt 的"验证至多 1-2 步 / diff 即权威无需复验"会诱发 plausible-but-wrong 的过度修复（轨迹分析中多个失败由此而来），已改为鼓励运行真实测试、禁止内联重抄自测的假验证
+- "不修改测试文件"是 SWE-bench 的硬约束，违反会导致评估结果无效；但**鼓励阅读**现有测试（最强行为信号），且要求按"被改符号名"检索而非主题关键词（轨迹分析 R7）
+- **最小化、错误点局部修复偏置**：多个失败源于"合理但错位/过宽"的修复（pylint 改错文件、requests 把对象提到循环外改变别名、xarray 新增并行代码路径），prompt 明确要求在错误产生处做最小改动
+- **行为验证优先 + 不再默认退化静态分析**：删除了"依赖可能没有、pip 可能不可用 → 退化为静态分析"的逃生门（轨迹分析 R5：它把"放弃验证"写成了官方默许），改为"环境已尝试预装依赖，优先跑真实测试；导入失败先自举安装，确实无法运行才静态复核并明示"
+- **注入维护者 hints + deprecation 约定提示**：`hints_text` 此前被解析却从未注入，而它常含决定性 API 设计；prompt 现注入并提示"讨论常覆盖原 issue 提案"，并对歧义 API 行为提示优先考虑 DeprecationWarning 而非静默改行为（轨迹分析 R3/R7）
 - **文件工具一律用相对路径**：注入的绝对工作目录曾诱使模型给 read_file/edit_file 传绝对路径，触发路径拼接错误（已在 `safePath` 修复，并以 prompt 双重保险）
 - 推理语言改为英文 + 单行防漂移约束（评测只看 patch，英文更贴合英文代码/Issue/堆栈）
 
@@ -281,7 +289,11 @@ writeSummary(...)
 OPENAI_API_KEY=sk-...
 OPENAI_BASE_URL=https://openrouter.ai/api/v1   # 可选，接入 OpenRouter / Azure 等
 LLM_MODEL=openai/gpt-4o
-SANDBOX_IMAGE=python:3.11-slim                  # 推荐，Python 3.11 更适合 SWE-bench
+# 默认 python:3.11（自带 pip，可从 wheel 拉依赖）；runner 会默认自举安装依赖以跑真实测试。
+# 高保真：设为官方每实例镜像 swebench/sweb.eval.x86_64.<instance>（仓库+依赖已预装）。
+SANDBOX_IMAGE=python:3.11
+# 可选：覆盖默认依赖自举命令（默认 ensurepip + pip install -e . + pytest）。
+# SANDBOX_BOOTSTRAP_CMD=pip install -e . -q && pip install pytest -q
 ```
 
 **也可通过系统环境变量提供**（系统变量优先于 `.env`）：
@@ -493,14 +505,93 @@ go run ./cmd/swebench --help
 | `LLM_MODEL` | 模型名称 | `openai/gpt-4o` |
 | `LLM_REQUEST_TIMEOUT_SECS` | 单次 LLM 请求超时（秒）| `600`（默认）|
 | `LLM_MAX_RETRIES` | SDK 内置重试次数（429/5xx）| `5`（默认）|
-| `SANDBOX_IMAGE` | Docker 镜像 | `python:3.11-slim` |
+| `SANDBOX_IMAGE` | Docker 镜像 | `python:3.11`（默认）；高保真用 `swebench/sweb.eval.x86_64.<instance>` |
 | `SANDBOX_ENABLED` | 启用 Docker 隔离 | `true`（默认）|
-| `SANDBOX_BOOTSTRAP_CMD` | 容器就绪后执行一次的初始化命令（装依赖/激活环境）| 如 `pip install -e . -q` |
+| `SANDBOX_BOOTSTRAP_CMD` | 容器就绪后执行一次的依赖安装命令；**留空时 runner 自动注入默认自举**（`ensurepip` + `pip install -e .` + `pytest`）| 留空即可 |
 | `SANDBOX_BOOTSTRAP_TIMEOUT_SECS` | bootstrap 命令超时（秒）| `600`（默认）|
 
 ---
 
-## 6. 代码位置速查
+## 6. 轨迹驱动的内核优化实录（v1 → v2）
+
+> 本节记录一次完整的「评估 → 取证分析 → 内核优化 → 复测对比」闭环：基于第一轮 24 实例评估的完整 trajectory 取证，定位框架内核短板，针对性优化后复测，**Resolved 从 16/24（66.7%）提升到 19/24（79.2%），零回归**。
+>
+> 完整根因报告见 `docs/技术调研/swebench-轨迹分析与内核优化-v2.md`。
+
+### 6.1 方法论
+
+对 8 条失败轨迹逐一做三方对比——**我们的 patch ↔ gold patch ↔ 隐藏测试（test_patch + FAIL_TO_PASS）**，先定位「为何过不了隐藏测试」，再回溯轨迹找出「Agent 为何产出这个 patch」，并对每条 harness 归因做**对抗式复核**（核对当前内核源码，剔除「已修复/不存在」的伪根因）。复核结论：**21 confirmed / 6 partial / 2 refuted**。
+
+### 6.2 决定性发现：验证闭环 100% 断裂
+
+> **第一轮 24 条轨迹里没有任何一条真正跑过一次测试**——全部命中 `ModuleNotFoundError` / `No module named pip`。16 条 resolved 全靠**纯静态分析**蒙对；8 条 unresolved 基本都是「必须靠真实测试反馈才能收敛」的题。
+
+病根在 runner：clone+checkout 后**没有任何依赖安装步骤**，且 `.env` 误用了非 Python 镜像，使 Agent 被关进一个**无依赖、无 pip、跑不了任何测试**的空环境——内核最重要的反馈信号（真实测试结果）恒为空。最讽刺的是 `sandbox` 包早已留好 `BootstrapCmd` 接缝，但 runner 从未接线。
+
+### 6.3 根因分级（已对抗式复核）
+
+| # | 根因 | 命中 | 复核 |
+|---|------|------|------|
+| **R1** | **环境缺失**：sandbox 无依赖/无 pip，真实测试不可运行 | 8/8 | confirmed |
+| **R2** | **验证闭环缺失**：循环仅凭「无工具调用」终止，无「跑过测试再收尾」关卡，静态自证即交卷 | 8/8 | confirmed |
+| **R3** | **HintsText 被丢弃**：`dataset` 解析了 `hints_text` 但 prompt 从未注入；维护者讨论常含决定性 API 设计（flask `text=True`）| 多条 | confirmed |
+| **R4** | **dataset 字段缺失**：未解析 `version`/`environment_setup_commit`/`FAIL_TO_PASS`/`test_patch`，无从 provision | 8/8 | confirmed |
+| **R5** | **prompt 反向引导**：明示「依赖可能没有 → 退化静态分析」，把「放弃验证」写成官方默许 | 8/8 | confirmed |
+| **R6** | **盲目空转到 max_turns**：无反馈时反复静态重读，xarray-3364、pylint-7080 烧满 80 轮被截断 | 2/8 | confirmed |
+| **R7** | **合理但错位的修复**：错位置（pylint 改错文件）、自创 API（flask `mode=`）、改行为而非加 DeprecationWarning（xarray）| 6/8 | confirmed |
+| **R8** | **edit_file 提示抑制验证**：精确匹配时输出「无需…再次确认」，助长「改完即完成」 | 多条 | confirmed |
+
+### 6.4 针对性优化（按根因映射）
+
+| 优化 | 文件 | 根因 |
+|------|------|------|
+| **接通依赖自举**：runner 为每实例默认设 `BootstrapCmd`（ensurepip + `pip install -e .` + pytest），默认镜像改 `python:3.11`（buildpack 全镜像，带 pip 与编译器）| `runner.go` | R1/R4 |
+| **验证关卡**：Agent 自然结束却全程未跑过测试时，注入一次续跑提示要求真实验证（复用内存会话延续历史，至多一次，超时/turn 兜底）| `runner.go` | R2 |
+| **HintsText 注入** + dataset 解析评测字段（`FAIL_TO_PASS`/`test_patch` 仅供分析，绝不在运行时暴露/应用）| `prompt.go` `dataset.go` | R3/R4 |
+| **停滞提示 `WithStallNudge`**：连续 N 轮无 edit/write 进展工具调用时注入一次提示打断空转（防御性副本，不持久化）| `engine/agent_loop.go` | R6 |
+| **prompt 重平衡**：删「默认退化静态分析」逃生门；加最小化/错误点局部修复偏置、按符号名查测试、DeprecationWarning 约定提示 | `prompt.go` | R5/R7 |
+| **edit_file banner 收敛**：「无需再确认」→ 明确「字节写入≠行为正确，仍需跑测试」| `tools/edit_file.go` | R8 |
+
+> 全部改动均为 TDD（红→绿），配套单元测试 + eval 黄金用例（含 `Case.EngineOptions` 接缝 + 停滞提示回归护栏），`go test ./...` 全绿。
+
+### 6.5 实测对比（同 seed=1、同 24 实例、同模型 anthropic/claude-sonnet-4.6、同官方评分器）
+
+| 指标 | v1（优化前） | v2（优化后） | Δ |
+|---|---|---|---|
+| **Resolved** | **16/24（66.7%）** | **19/24（79.2%）** | **+3，+12.5pp** |
+| 回归（v1 过→v2 挂）| — | **0** | 零回归 |
+| 真实测试运行实例 | **1/24** | **18/24** | **+17** |
+| 端到端墙钟 | ~75 min | **23 min** | **3.3× 更快** |
+
+> 评分时 3 条实例曾因 arm64 模拟下 4 并发的 Docker 资源争用「error」（非补丁问题），单线程重评后确认 astropy-12907 / django-14855 仍 RESOLVED、seaborn-3407 仍 unresolved；19/24 为干净复评后的最终数字。
+
+### 6.6 三个新解决的实例 = 三项优化各自命中
+
+| 实例 | v1 | v2 | 起作用的优化 |
+|---|---|---|---|
+| **pylint-7080** | 80 轮(打满)/无测试 → 挂 | **17 轮/测试 → 过** | 依赖自举让 `pylint` 可跑 → 盲目空转 80 轮变成 17 轮收敛到正确的 1 行 `os.path.normpath` 修复（最典型）|
+| **flask-4992** | 13 轮/无测试 → 挂 | **14 轮/测试 → 过** | hints 注入暴露维护者定的 `text=True` API + 真实测试当场暴露 `mode='t'` 的 ValueError |
+| **astropy-7746** | 17 轮/无测试 → 挂 | **110 轮/测试 → 过** | 验证关卡触发一次续跑（110=主跑+强制验证），真实测试抓到非对称 `[],[1]` 回归 |
+
+### 6.7 五个仍未解决：诚实归因
+
+| 实例 | v2 | 根因类别 |
+|---|---|---|
+| **requests-1963** | 11 轮/**无测试** | **环境天花板**：2014 年代码需 Python 2.7，python:3.11 连 import 都不行 → 仍无法验证。唯一解：官方每实例镜像（`SANDBOX_IMAGE` 接口已留好）|
+| **xarray-4493** | 40 轮/测试 | **隐藏测试专属行为**：gold 要发 `DeprecationWarning`，只写在评测时才注入的 test_patch 里，运行时看不到 |
+| **seaborn-3407** | 33 轮/测试 | 同上：隐藏测试断言 `diag_vars==list(cols)` 的精确类型 |
+| **flask-5063** | 16 轮/测试 | 同上：隐藏测试要 `Host`/`Subdomain` 表头 + host_matching 模式 |
+| **xarray-3364** | 80 轮(打满)/测试 | **复杂定位**：现在能跑测试，但锚定了一条 test_patch 会删除的现存断言，仍改错代码路径 |
+
+### 6.8 关键结论
+
+- **真实测试反馈是「必要但不充分」**：它解决了「能靠反馈收敛」的题（+3、零回归、还快 3 倍），但对「期望行为只存在于隐藏测试」这一类（xarray-4493/seaborn-3407/flask-5063）即便有环境也无能为力。
+- 剩余 5 例已被精确归因为「**环境天花板(1) + 隐藏测试专属行为(3) + 复杂定位(1)**」，与根因分析完全自洽。
+- 下一步增量只能来自：① 官方每实例镜像（解 requests-1963 这类版本天花板）；② 更强的「按项目惯例推断隐藏行为」脚手架。
+
+---
+
+## 7. 代码位置速查
 
 | 文件 | 职责 |
 |------|------|

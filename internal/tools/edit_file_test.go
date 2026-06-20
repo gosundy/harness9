@@ -611,6 +611,11 @@ func TestEditFile_ExactMatch_AuthoritativeBanner(t *testing.T) {
 	if !strings.Contains(out, "✓") || !strings.Contains(out, "精确匹配") {
 		t.Errorf("精确匹配应声明权威确认，got: %q", out)
 	}
+	// 精确匹配只确认"字节已写入"，不得暗示"行为已验证"——必须提醒仍需运行真实测试验证行为。
+	// （SWE-bench 轨迹分析 R8：旧 banner "无需…再次确认" 助长"改完即完成"，跳过行为验证。）
+	if !strings.Contains(out, "行为") {
+		t.Errorf("精确匹配 banner 应提醒\"写入成功≠行为正确\"，仍需验证行为，got: %q", out)
+	}
 }
 
 // buildEditSummary：CRLF 文件归一化后正常展示

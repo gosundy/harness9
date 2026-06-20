@@ -90,3 +90,51 @@ func TestSwebenchPromptBuilder(t *testing.T) {
 		t.Error("prompt should no longer contain the discourage-verification anti-pattern")
 	}
 }
+
+// TestSwebenchPrompt_InjectsHints 验证 hints_text 被注入 prompt（R3：维护者讨论常含决定性
+// API 设计，如 flask 的 text=True；此前被解析却从未注入，是最强信号被静默丢弃）。
+func TestSwebenchPrompt_InjectsHints(t *testing.T) {
+	inst := Instance{InstanceID: "x", ProblemStatement: "P", HintsText: "maintainers chose text=True over mode"}
+	b := &swebenchPromptBuilder{instance: inst, workDir: "/w"}
+	p := b.Build()
+	if !strings.Contains(p, "maintainers chose text=True over mode") {
+		t.Error("prompt should inject hints_text content")
+	}
+	if strings.Contains(p, "{{HINTS}}") {
+		t.Error("prompt should not contain unreplaced HINTS placeholder")
+	}
+	if !strings.Contains(p, "Maintainer hints") {
+		t.Error("prompt should label the injected hints section")
+	}
+}
+
+// TestSwebenchPrompt_OmitsHintsSectionWhenEmpty 验证无 hints 时优雅省略整段（不留空标题/占位符）。
+func TestSwebenchPrompt_OmitsHintsSectionWhenEmpty(t *testing.T) {
+	b := &swebenchPromptBuilder{instance: Instance{ProblemStatement: "P"}, workDir: "/w"}
+	p := b.Build()
+	if strings.Contains(p, "{{HINTS}}") {
+		t.Error("empty hints: should not contain unreplaced placeholder")
+	}
+	if strings.Contains(p, "Maintainer hints") {
+		t.Error("empty hints: section header should be omitted entirely")
+	}
+}
+
+// TestSwebenchPrompt_MandatesRealVerification 验证 prompt 重平衡（R5/R7）：
+// 不再把"退化为静态分析"写成默认逃生门，并加入最小化/错误点局部修复偏置与 deprecation 约定提示。
+func TestSwebenchPrompt_MandatesRealVerification(t *testing.T) {
+	b := &swebenchPromptBuilder{instance: Instance{ProblemStatement: "P"}, workDir: "/w"}
+	p := b.Build()
+	// R5：删除"默认退化为静态分析"反模式
+	if strings.Contains(p, "fall back to careful static analysis of the real source") {
+		t.Error("prompt should no longer license static analysis as the default fallback")
+	}
+	// R7：最小化、错误点局部修复偏置
+	if !strings.Contains(p, "smallest change") {
+		t.Error("prompt should bias toward the smallest change at the error site")
+	}
+	// R7：deprecation 约定提示（xarray-4493：gold 发 DeprecationWarning 而非静默改行为）
+	if !strings.Contains(p, "DeprecationWarning") {
+		t.Error("prompt should hint at the project's deprecation-warning convention")
+	}
+}

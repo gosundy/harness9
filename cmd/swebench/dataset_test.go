@@ -61,3 +61,63 @@ func TestSampleByRepo(t *testing.T) {
 		t.Errorf("django sample exceeds limit: %d", count["django/django"])
 	}
 }
+
+// TestLoadDataset_ParsesEnvironmentFields 验证新增的环境/评测字段被正确解析：
+// version / environment_setup_commit / FAIL_TO_PASS / test_patch。
+// 这些字段是为每实例 provision 依赖、选对 Python 版本、了解评测目标所必需的。
+func TestLoadDataset_ParsesEnvironmentFields(t *testing.T) {
+	content := `{"instance_id":"pallets__flask-4992","repo":"pallets/flask","base_commit":"abc","problem_statement":"toml","hints_text":"use text=True","version":"2.3","environment_setup_commit":"deadbeef","FAIL_TO_PASS":"[\"tests/test_config.py::test_config_from_file_toml\"]","PASS_TO_PASS":"[\"a\",\"b\"]","test_patch":"diff --git a/tests x"}
+`
+	tmp := filepath.Join(t.TempDir(), "lite.jsonl")
+	if err := os.WriteFile(tmp, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+	insts, err := loadDataset(tmp)
+	if err != nil {
+		t.Fatalf("loadDataset error: %v", err)
+	}
+	if len(insts) != 1 {
+		t.Fatalf("want 1 instance, got %d", len(insts))
+	}
+	got := insts[0]
+	if got.Version != "2.3" {
+		t.Errorf("Version: want 2.3, got %q", got.Version)
+	}
+	if got.EnvironmentSetupCommit != "deadbeef" {
+		t.Errorf("EnvironmentSetupCommit: want deadbeef, got %q", got.EnvironmentSetupCommit)
+	}
+	if got.FailToPass == "" {
+		t.Errorf("FailToPass should be populated, got empty")
+	}
+	if got.TestPatch == "" {
+		t.Errorf("TestPatch should be populated, got empty")
+	}
+}
+
+// TestParseTestIDs 验证把 SWE-bench 中"JSON 编码为字符串的测试 ID 数组"解析为 []string。
+func TestParseTestIDs(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want []string
+	}{
+		{"normal", `["tests/test_config.py::test_toml", "tests/test_cli.py::TestRoutes::test_host"]`, []string{"tests/test_config.py::test_toml", "tests/test_cli.py::TestRoutes::test_host"}},
+		{"single", `["x::y"]`, []string{"x::y"}},
+		{"empty_string", ``, nil},
+		{"empty_array", `[]`, nil},
+		{"malformed", `not json`, nil},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := parseTestIDs(c.in)
+			if len(got) != len(c.want) {
+				t.Fatalf("len mismatch: want %v, got %v", c.want, got)
+			}
+			for i := range got {
+				if got[i] != c.want[i] {
+					t.Errorf("idx %d: want %q, got %q", i, c.want[i], got[i])
+				}
+			}
+		})
+	}
+}

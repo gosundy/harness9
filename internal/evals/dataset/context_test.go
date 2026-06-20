@@ -8,6 +8,7 @@ import (
 	"context"
 	"testing"
 
+	"github.com/harness9/internal/engine"
 	"github.com/harness9/internal/evals"
 	"github.com/harness9/internal/schema"
 )
@@ -114,4 +115,43 @@ func TestContextEngineering(t *testing.T) {
 		}
 	}
 	t.Logf("Context Engineering 评估: %d/%d 通过", passed, passed+failed)
+}
+
+// TestStallNudgeKeepsReActLoopCorrect 验证：启用 WithStallNudge（连续多轮无进展工具即注入
+// 一次停滞提示）后，ReAct 主循环仍正确运行——长时只读探索触发 nudge 注入，循环不被破坏，
+// 工具调用序列与终止行为保持正确。这是停滞提示注入路径（appendUserNudge）的回归护栏，
+// 防止 nudge 注入破坏消息结构 / 工具调用流（轨迹分析 R6 的工程化落地）。
+func TestStallNudgeKeepsReActLoopCorrect(t *testing.T) {
+	evals.SetupHermeticEnv(t)
+
+	c := &evals.Case{
+		ID:       "context/stall_nudge_preserves_loop",
+		Category: "context",
+		Prompt:   "反复探索代码库后再行动。",
+		Provider: evals.NewScriptedProvider(
+			// 连续 3 轮只读探索（read_file）——window=2 时第 3 轮前会注入停滞提示。
+			evals.ScriptedTurn{ToolCalls: []schema.ToolCall{evals.MakeToolCall("t1", "read_file", `{"path":"a.txt"}`)}},
+			evals.ScriptedTurn{ToolCalls: []schema.ToolCall{evals.MakeToolCall("t2", "read_file", `{"path":"a.txt"}`)}},
+			evals.ScriptedTurn{ToolCalls: []schema.ToolCall{evals.MakeToolCall("t3", "read_file", `{"path":"a.txt"}`)}},
+			// 收到提示语义后执行一条命令并收尾（ScriptedProvider 按序返回，验证循环未被破坏）。
+			evals.ScriptedTurn{ToolCalls: []schema.ToolCall{evals.MakeToolCall("t4", "bash", `{"command":"echo done"}`)}},
+			evals.ScriptedTurn{Text: "探索完成并已行动。"},
+		),
+		// 启用停滞提示，窗口 2：第 3 轮只读前注入一次提示。
+		EngineOptions: []engine.Option{engine.WithStallNudge(2, "【停滞提示】请运行测试或定稿，不要继续空转。")},
+		Assertions: []evals.Assertion{
+			&evals.ToolCalledAssertion{ToolName: "read_file"},
+			&evals.ToolCalledAssertion{ToolName: "bash"},
+			&evals.NoErrorAssertion{},
+		},
+	}
+
+	res := evals.RunCase(context.Background(), c)
+	if !res.Passed {
+		for _, f := range res.Failures {
+			t.Errorf("❌ %s: %s", c.ID, f.Error())
+		}
+	} else {
+		t.Logf("✅ %s (%d turns)", c.ID, res.TurnCount)
+	}
 }

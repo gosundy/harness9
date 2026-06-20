@@ -68,6 +68,20 @@ func WithMemoryNudge(interval int, text string) Option {
 	}
 }
 
+// WithStallNudge 配置停滞 nudge：当连续 window 个"使用了工具但未调用任何进展工具
+// （edit_file/write_file）"的 turn 后，向发送给 LLM 的历史副本注入一次 text 提示，
+// 然后重置计数。用于打断"反复静态重读却不收敛"的空转（SWE-bench 轨迹中 xarray-3364、
+// pylint-7080 烧满 80 轮即此形态）。
+//
+// 与 WithMemoryNudge 一致：仅注入到临时副本，绝不持久化、不累积；window<=0 时关闭。
+// 进展工具集合见 progressToolNames。
+func WithStallNudge(window int, text string) Option {
+	return func(e *AgentEngine) {
+		e.stallWindow = window
+		e.stallText = text
+	}
+}
+
 // PromptBuilder 构造 Agent 的 system prompt。
 // 接口定义在 engine 包（使用者侧），由 internal/context 包实现。
 // 引擎通过此接口与 Context Engineering 模块解耦。
@@ -145,6 +159,8 @@ type AgentEngine struct {
 	permissionMode     PermissionMode      // 全局权限策略，影响审批行为
 	nudgeInterval      int                 // >0 时每隔该轮数注入一次记忆 nudge
 	nudgeText          string              // nudge 提示文本
+	stallWindow        int                 // >0 时连续该轮数无进展工具调用则注入一次停滞 nudge
+	stallText          string              // 停滞 nudge 提示文本
 	observer           EngineObserver      // 可选，nil 时自动退化为 noopObserver
 	generateRetries    int                 // LLM 生成调用最大尝试次数（默认 3）
 	generateRetryBase  time.Duration       // 重试退避基准（默认 1s）
@@ -340,6 +356,9 @@ func (e *AgentEngine) runLoop(ctx context.Context, userPrompt string, logPrefix 
 
 	overallStart := time.Now()
 
+	// turnsSinceProgress 记录自上次"进展工具"调用以来的轮数，驱动 WithStallNudge 停滞检测。
+	turnsSinceProgress := 0
+
 	for {
 		turnCount++
 		turnCtx := obs.OnTurnStart(ctx, turnCount)
@@ -383,12 +402,14 @@ func (e *AgentEngine) runLoop(ctx context.Context, userPrompt string, logPrefix 
 		// 记忆 nudge：每隔 nudgeInterval 轮，向发送给 LLM 的历史副本追加一行提示。
 		// 注入到防御性副本，绝不写入 contextHistory（因此不会被持久化、不会累积）。
 		if e.nudgeInterval > 0 && e.nudgeText != "" && turnCount%e.nudgeInterval == 0 {
-			withNudge := make([]schema.Message, len(compactedHistory), len(compactedHistory)+1)
-			copy(withNudge, compactedHistory)
-			compactedHistory = append(withNudge, schema.Message{
-				Role:    schema.RoleUser,
-				Content: e.nudgeText,
-			})
+			compactedHistory = appendUserNudge(compactedHistory, e.nudgeText)
+		}
+
+		// 停滞 nudge：连续 stallWindow 轮未调用进展工具（只在静态重读/grep 空转）时，
+		// 注入一次提示打断空转，并重置计数，避免每轮重复刷屏。同样仅作用于临时副本。
+		if e.stallWindow > 0 && e.stallText != "" && turnsSinceProgress >= e.stallWindow {
+			compactedHistory = appendUserNudge(compactedHistory, e.stallText)
+			turnsSinceProgress = 0
 		}
 
 		turnStart := time.Now()
@@ -413,6 +434,13 @@ func (e *AgentEngine) runLoop(ctx context.Context, userPrompt string, logPrefix 
 			log.Print(logfmt.FormatTurnDone(logPrefix, turnCount, llmDuration, time.Since(overallStart)))
 			obs.OnTurnEnd(turnCtx, turnCount, false)
 			break
+		}
+
+		// 停滞计数：本轮调用了进展工具则归零，否则累加（驱动 WithStallNudge）。
+		if hasProgressTool(responseMsg.ToolCalls) {
+			turnsSinceProgress = 0
+		} else {
+			turnsSinceProgress++
 		}
 
 		toolStart := time.Now()
@@ -528,6 +556,32 @@ var planModeWhitelist = map[string]bool{
 	"bash":       true,
 	"use_skill":  true,
 	"todo_write": true,
+}
+
+// progressToolNames 是被视为"取得实质进展"的工具集合（用于 WithStallNudge 停滞检测）。
+// 调用其一即重置停滞计数：它们改变工作区状态（写入/编辑文件），是 Agent 真正推进任务的信号。
+// 只读探索（read_file/bash grep 等）不计入进展，连续多轮只读即被判定为停滞。
+var progressToolNames = map[string]bool{
+	"write_file": true,
+	"edit_file":  true,
+}
+
+// hasProgressTool 判断本轮工具调用中是否包含进展工具。
+func hasProgressTool(calls []schema.ToolCall) bool {
+	for _, tc := range calls {
+		if progressToolNames[tc.Name] {
+			return true
+		}
+	}
+	return false
+}
+
+// appendUserNudge 返回在历史副本末尾追加一条 user nudge 消息的新切片。
+// 不修改入参、不持久化——nudge 仅对当轮发送给 LLM 的临时副本可见。
+func appendUserNudge(history []schema.Message, text string) []schema.Message {
+	withNudge := make([]schema.Message, len(history), len(history)+1)
+	copy(withNudge, history)
+	return append(withNudge, schema.Message{Role: schema.RoleUser, Content: text})
 }
 
 // filterReadOnlyTools 从工具定义列表中过滤出 planModeWhitelist 中的子集，

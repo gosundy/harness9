@@ -7,10 +7,13 @@
 //
 // 环境变量（可通过 .env 文件或系统环境变量提供）：
 //
-//	OPENAI_API_KEY   LLM Provider API Key（必填）
-//	OPENAI_BASE_URL  自定义 OpenAI 兼容 API 地址（可选，用于 OpenRouter / Azure 等）
-//	LLM_MODEL        模型名称（默认: openai/gpt-4o-mini）
-//	SANDBOX_IMAGE    Docker 镜像（推荐: python:3.11-slim，默认: ubuntu:22.04）
+//	OPENAI_API_KEY        LLM Provider API Key（必填）
+//	OPENAI_BASE_URL       自定义 OpenAI 兼容 API 地址（可选，用于 OpenRouter / Azure 等）
+//	LLM_MODEL             模型名称（默认: openai/gpt-4o-mini）
+//	SANDBOX_IMAGE         Docker 镜像（默认 python:3.11；高保真可设为官方每实例镜像
+//	                      swebench/sweb.eval.x86_64.<instance>，仓库与依赖已预装）
+//	SANDBOX_BOOTSTRAP_CMD 容器就绪后、Agent 启动前执行的依赖安装命令（默认自举：
+//	                      ensurepip + pip install -e . + pytest）。设置后覆盖默认自举。
 package main
 
 import (
