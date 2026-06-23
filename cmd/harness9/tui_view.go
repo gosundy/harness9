@@ -561,6 +561,18 @@ func (m tuiModel) View() string {
 		sb.WriteByte('\n')
 		sb.WriteString(m.renderFooter())
 	} else {
+		// MCP 工具面板独占全屏，必须在 renderConversation 之前处理，
+		// 否则对话区会占满屏幕，MCP 面板内容被压到可视区域之外。
+		if m.mcpPanelMode {
+			contentH := m.height - mcpPanelOverhead
+			if contentH < 1 {
+				contentH = 1
+			}
+			sb.WriteString(m.renderMCPPanel(contentH))
+			sb.WriteByte('\n')
+			sb.WriteString(m.renderStatusBar())
+			return sb.String()
+		}
 		scrollH := m.scrollHeight()
 		sb.WriteString(m.renderConversation(scrollH))
 		sb.WriteByte('\n')
@@ -584,12 +596,6 @@ func (m tuiModel) View() string {
 		}
 		if m.planReviewing {
 			sb.WriteString(m.renderPlanReviewDialog())
-			sb.WriteByte('\n')
-			sb.WriteString(m.renderStatusBar())
-			return sb.String()
-		}
-		if m.mcpPanelMode {
-			sb.WriteString(m.renderMCPPanel())
 			sb.WriteByte('\n')
 			sb.WriteString(m.renderStatusBar())
 			return sb.String()
@@ -694,9 +700,14 @@ func (m tuiModel) renderMCPBar() string {
 	return strings.Join(parts, " ")
 }
 
+// mcpPanelOverhead 是 MCP 面板固定占用的行数（不含滚动内容区）：
+// 2（"MCP 工具管理" + 空行）+ 1（底栏）+ 1（View() 中的状态栏行）= 4。
+// View() 和 handleMCPPanelKey() 必须使用相同常量计算 contentH，保持一致。
+const mcpPanelOverhead = 4
+
 // renderMCPPanel 渲染 MCP 工具管理面板（模态）。
-// 展示所有已配置 MCP Server 的连接状态及工具列表，底部提供编辑配置的快捷键。
-func (m tuiModel) renderMCPPanel() string {
+// contentH 是滚动内容区可用的行数，由调用方根据终端高度计算，以确保面板撑满屏幕。
+func (m tuiModel) renderMCPPanel(contentH int) string {
 	var sb strings.Builder
 	sb.WriteString(cyanStyle.Render("MCP 工具管理") + "\n\n")
 
@@ -738,15 +749,29 @@ func (m tuiModel) renderMCPPanel() string {
 		lines = append(lines, "")
 	}
 
-	// 应用滚动偏移
+	// 应用滚动偏移并裁剪至可用高度
+	canScroll := len(lines) > contentH
 	start := m.mcpPanelScroll
-	if start >= len(lines) {
+	if start > len(lines) {
 		start = len(lines)
 	}
-	for _, ln := range lines[start:] {
+	end := start + contentH
+	if end > len(lines) {
+		end = len(lines)
+	}
+	for _, ln := range lines[start:end] {
 		sb.WriteString(ln + "\n")
 	}
+	// 用空行补齐剩余内容区，使底栏始终固定在面板底部
+	for i := end - start; i < contentH; i++ {
+		sb.WriteByte('\n')
+	}
 
-	sb.WriteString("\n" + dimStyle.Render("e 编辑配置  ↑↓/jk 滚动  Esc 关闭"))
+	// 仅当内容超出可视区域时才显示滚动提示，避免内容可完整显示时误导用户
+	if canScroll {
+		sb.WriteString(dimStyle.Render("e 编辑配置  ↑↓/jk 滚动  Esc 关闭"))
+	} else {
+		sb.WriteString(dimStyle.Render("e 编辑配置  Esc 关闭"))
+	}
 	return sb.String()
 }

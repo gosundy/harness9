@@ -11,6 +11,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/harness9/internal/engine"
+	mcppkg "github.com/harness9/internal/mcp"
 	"github.com/harness9/internal/schema"
 	"github.com/harness9/internal/subagent"
 )
@@ -1164,5 +1165,143 @@ func TestBuildMentionHint(t *testing.T) {
 	m.input.SetValue("@zzz")
 	if h := m.buildCompletionHint(); h != "" {
 		t.Fatalf("@zzz 无匹配应返回空, 得 %q", h)
+	}
+}
+
+// panelRowCount 统计字符串在终端中实际占用的行数。
+// 末尾无 \n 时最后一行也计入（与终端渲染一致）。
+func panelRowCount(s string) int {
+	if s == "" {
+		return 0
+	}
+	return strings.Count(s, "\n") + 1
+}
+
+// TestRenderMCPPanel_EmptyServers 验证无 MCP Server 时显示未配置提示。
+func TestRenderMCPPanel_EmptyServers(t *testing.T) {
+	m := newTestModel()
+	m.mcpServers = nil
+
+	out := m.renderMCPPanel(10)
+	if !strings.Contains(out, "未配置 MCP Server") {
+		t.Errorf("空 Server 时应含未配置提示，got: %q", out)
+	}
+}
+
+// TestRenderMCPPanel_RowCount 验证面板产生恰好 contentH+3 行，
+// 使 View() 追加 "\n" + renderStatusBar 后总高度 = contentH+4 = m.height。
+func TestRenderMCPPanel_RowCount(t *testing.T) {
+	tools := []mcppkg.ToolDetail{
+		{AdapterName: "mcp__srv__tool1", Description: "desc one"},
+		{AdapterName: "mcp__srv__tool2", Description: "desc two"},
+	}
+	servers := []mcppkg.ServerStatus{
+		{Name: "srv", Status: mcppkg.StatusConnected, ToolsLen: 2, ToolDetails: tools},
+	}
+
+	cases := []struct {
+		contentH int
+	}{
+		{5},
+		{10},
+		{20},
+		{30},
+	}
+
+	for _, tc := range cases {
+		m := newTestModel()
+		m.mcpServers = servers
+		m.mcpPanelScroll = 0
+
+		out := m.renderMCPPanel(tc.contentH)
+		got := panelRowCount(out)
+		want := tc.contentH + 3
+		if got != want {
+			t.Errorf("contentH=%d: 面板行数 = %d，期望 %d\n输出: %q",
+				tc.contentH, got, want, out)
+		}
+	}
+}
+
+// TestRenderMCPPanel_ScrollHint 验证滚动提示仅在内容超出高度时出现。
+func TestRenderMCPPanel_ScrollHint(t *testing.T) {
+	// 构造 8 行内容（1 header + 2*2 tool + 1 blank + 2 extra tools * 2）= 1+4+1=6 for 2 tools
+	tools := func(n int) []mcppkg.ToolDetail {
+		out := make([]mcppkg.ToolDetail, n)
+		for i := range out {
+			out[i] = mcppkg.ToolDetail{AdapterName: "mcp__s__t", Description: "d"}
+		}
+		return out
+	}
+
+	m := newTestModel()
+	m.mcpServers = []mcppkg.ServerStatus{
+		{Name: "s", Status: mcppkg.StatusConnected, ToolsLen: 2, ToolDetails: tools(2)},
+	}
+	// totalLines = 1(header) + 2*2(tools) + 1(blank) = 6
+
+	// contentH > totalLines → 不显示滚动提示
+	outFit := m.renderMCPPanel(20)
+	if strings.Contains(outFit, "滚动") {
+		t.Errorf("内容可完整展示时不应显示滚动提示，got: %q", outFit)
+	}
+	if !strings.Contains(outFit, "Esc") {
+		t.Errorf("内容可完整展示时应有 Esc 提示，got: %q", outFit)
+	}
+
+	// contentH < totalLines → 显示滚动提示
+	outScroll := m.renderMCPPanel(4)
+	if !strings.Contains(outScroll, "滚动") {
+		t.Errorf("内容溢出时应显示滚动提示，got: %q", outScroll)
+	}
+}
+
+// TestRenderMCPPanel_ScrollOffset 验证 mcpPanelScroll 正确跳过头部行。
+func TestRenderMCPPanel_ScrollOffset(t *testing.T) {
+	m := newTestModel()
+	m.mcpServers = []mcppkg.ServerStatus{
+		{
+			Name:     "ctx",
+			Status:   mcppkg.StatusConnected,
+			ToolsLen: 1,
+			ToolDetails: []mcppkg.ToolDetail{
+				{AdapterName: "mcp__ctx__tool", Description: "some desc"},
+			},
+		},
+	}
+
+	// scroll=0：第一行应含 server 名称
+	m.mcpPanelScroll = 0
+	out0 := m.renderMCPPanel(5)
+	if !strings.Contains(out0, "ctx") {
+		t.Errorf("scroll=0 时应显示 server 名称，got: %q", out0)
+	}
+
+	// scroll=1：跳过 server header，server 名称不再出现（工具行出现）
+	m.mcpPanelScroll = 1
+	out1 := m.renderMCPPanel(5)
+	if strings.Contains(out1, "● ctx") {
+		t.Errorf("scroll=1 时 server header 应被跳过，got: %q", out1)
+	}
+}
+
+// TestMCPPanelOverhead_LayoutConsistency 验证 mcpPanelOverhead 常量与实际布局吻合。
+// 模拟 View() 拼接：panel + "\n" + statusBar，总行数应等于 contentH + mcpPanelOverhead。
+func TestMCPPanelOverhead_LayoutConsistency(t *testing.T) {
+	m := newTestModel()
+	m.mcpServers = []mcppkg.ServerStatus{
+		{Name: "s", Status: mcppkg.StatusConnected, ToolsLen: 1,
+			ToolDetails: []mcppkg.ToolDetail{{AdapterName: "mcp__s__t", Description: "d"}}},
+	}
+	m.height = 20
+	contentH := m.height - mcpPanelOverhead
+
+	panel := m.renderMCPPanel(contentH)
+	// 模拟 View() 追加 "\n" + renderStatusBar()（单行，无尾随 \n）
+	full := panel + "\n" + m.renderStatusBar()
+	totalRows := panelRowCount(full)
+	if totalRows != m.height {
+		t.Errorf("面板总行数 = %d，期望 m.height = %d（mcpPanelOverhead=%d）",
+			totalRows, m.height, mcpPanelOverhead)
 	}
 }

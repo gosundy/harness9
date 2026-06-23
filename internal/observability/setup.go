@@ -50,8 +50,12 @@ func Setup(ctx context.Context, cfg Config) (*Providers, error) {
 
 	// 注册全局 OTEL error handler，直接写 os.Stderr 绕过 TUI 的 log.SetOutput(io.Discard)，
 	// 确保 OTEL 导出失败即使在 TUI 模式下也能被观测到。
+	// context.Canceled 是 SDK shutdown 取消后台导出 goroutine 时的预期行为，不记录以免误导。
 	otelLogger := log.New(os.Stderr, "", log.LstdFlags)
 	otel.SetErrorHandler(otel.ErrorHandlerFunc(func(err error) {
+		if errors.Is(err, context.Canceled) {
+			return
+		}
 		otelLogger.Printf("[OTEL] 导出错误: %v", err)
 	}))
 

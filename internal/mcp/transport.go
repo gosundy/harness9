@@ -14,6 +14,11 @@ import (
 	"time"
 )
 
+// stdioCloseTimeout 是 Close() 等待 readLoop 退出的最长时限。
+// 理论上进程组已被 kill、stdout 已关闭时 readLoop 应立即退出；
+// 此超时作为最终兜底，防止极端环境下进程残留导致永久阻塞。
+const stdioCloseTimeout = 3 * time.Second
+
 // Transport 抽象了与 MCP Server 的底层消息通道。
 // 实现者负责：建立连接、发送 JSON-RPC 请求并等待响应、发送通知（无需等待响应）、关闭连接。
 type Transport interface {
@@ -82,6 +87,10 @@ func NewStdioTransport(command string, args, env []string) *StdioTransport {
 // Start 启动子进程并开始读取 stdout 中的响应。
 func (t *StdioTransport) Start(ctx context.Context) error {
 	t.cmd = exec.CommandContext(ctx, t.command, t.args...)
+	// 独立进程组：使子进程（如 npx）及其所有后代（如 node）归属于同一进程组。
+	// Close() 通过 killProcessGroup 一次性终止整个组，避免 node 孤儿进程继续持有
+	// stdout pipe 导致 readLoop.Scan() 永久阻塞。平台相关实现见 transport_proc_*.go。
+	setPgid(t.cmd)
 	if len(t.env) > 0 {
 		t.cmd.Env = append(t.cmd.Environ(), t.env...)
 	}
@@ -199,11 +208,19 @@ func (t *StdioTransport) Notify(method string, params json.RawMessage) error {
 // 若 Start() 在启动 readLoop 前失败（loopRun == false），跳过 <-t.done 以避免永久阻塞。
 func (t *StdioTransport) Close() error {
 	if t.cmd != nil && t.cmd.Process != nil {
-		_ = t.cmd.Process.Kill()
+		pid := t.cmd.Process.Pid
+		// 优先杀整个进程组（平台相关实现见 transport_proc_*.go），确保 npx fork 出的
+		// node 子进程也被终止；回退到杀单个进程（跨平台兜底）。
+		if err := killProcessGroup(pid); err != nil {
+			_ = t.cmd.Process.Kill()
+		}
 		_ = t.cmd.Wait()
 	}
 	if t.loopRun {
-		<-t.done
+		select {
+		case <-t.done:
+		case <-time.After(stdioCloseTimeout):
+		}
 	}
 	return nil
 }

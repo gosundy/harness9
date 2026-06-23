@@ -225,8 +225,14 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.Action == tea.MouseActionPress {
 			switch msg.Button {
 			case tea.MouseButtonWheelUp:
+				if m.mcpPanelMode {
+					return m.handleMCPPanelKey(tea.KeyMsg{Type: tea.KeyUp})
+				}
 				m = m.scrollBy(-3)
 			case tea.MouseButtonWheelDown:
+				if m.mcpPanelMode {
+					return m.handleMCPPanelKey(tea.KeyMsg{Type: tea.KeyDown})
+				}
 				m = m.scrollBy(3)
 			}
 		}
@@ -1879,13 +1885,19 @@ func (m tuiModel) writeApprovalToConfig(req *engine.ApprovalRequest) {
 	_ = permission.SaveRules(m.settingsPath, rules)
 }
 
-// mcpPanelLineCount 计算 renderMCPPanel 会生成的总行数，用于滚动上界控制。
+// mcpPanelLineCount 计算 renderMCPPanel 的滚动内容区实际行数，用于滚动上界控制。
+// 必须与 renderMCPPanel 的实际输出保持一致：仅当 t.Description != "" 时才计描述行。
 func (m tuiModel) mcpPanelLineCount() int {
 	count := 0
 	for _, s := range m.mcpServers {
 		count++ // 服务器 header 行
 		if s.Status == mcppkg.StatusConnected {
-			count += len(s.ToolDetails) * 2 // 工具名 + 描述各一行
+			for _, t := range s.ToolDetails {
+				count++ // 工具名行
+				if t.Description != "" {
+					count++ // 描述行（仅在有描述时）
+				}
+			}
 		} else if s.ErrMsg != "" {
 			count++ // 错误信息行
 		}
@@ -1902,9 +1914,14 @@ func (m tuiModel) mcpPanelLineCount() int {
 //   - ↓ / j  → 向下滚动工具列表（夹住在内容末尾）
 //   - Ctrl+C → 退出程序
 func (m tuiModel) handleMCPPanelKey(msg tea.KeyMsg) (tuiModel, tea.Cmd) {
-	maxScroll := m.mcpPanelLineCount()
-	if maxScroll > 0 {
-		maxScroll-- // 最多滚到最后一行可见
+	// contentH 与 View() 中 mcpPanelOverhead 保持一致
+	contentH := m.height - mcpPanelOverhead
+	if contentH < 1 {
+		contentH = 1
+	}
+	maxScroll := m.mcpPanelLineCount() - contentH
+	if maxScroll < 0 {
+		maxScroll = 0
 	}
 	switch msg.Type {
 	case tea.KeyEsc:
