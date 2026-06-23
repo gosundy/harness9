@@ -1,5 +1,10 @@
-// Package tools — MCPToolAdapter：将 MCP 工具包装为 harness9 原生 BaseTool 实例。
+// mcp_adapter.go — MCPToolAdapter：将 MCP 工具包装为 harness9 原生 BaseTool 实例。
+//
 // MCP 工具对 Engine 完全透明，自动获得并发执行、超时控制、错误回传等所有现有机制。
+// 工具名采用 mcp__{server}__{tool} 双下划线格式，与 Claude Agent SDK / OpenHarness 保持一致，
+// 明确区分 MCP 工具与内置工具，避免 Registry 命名冲突。
+//
+// 调用链：Manager.InjectTools → NewMCPToolAdapter → registry.Register → Engine 透明分发。
 package tools
 
 import (
