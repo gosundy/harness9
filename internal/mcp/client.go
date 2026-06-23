@@ -1,3 +1,12 @@
+// client.go 实现 MCP 客户端核心逻辑：
+//
+//   - Client.Connect：完成 MCP 握手三步流程（initialize → notifications/initialized → tools/list），
+//     连接成功后 Client.Tools 被填充为该 Server 的工具列表。
+//   - Client.CallTool：调用 MCP Server 上的指定工具，透传 LLM 原始 JSON 参数，
+//     提取响应中所有 text 类型内容块并拼接为字符串返回；isError=true 时同时返回 error。
+//   - Client.Close：关闭底层 Transport（释放子进程/HTTP 连接等资源）。
+//
+// Transport 由 Manager 根据 ServerConfig 构建后注入，Client 本身不感知传输细节。
 package mcp
 
 import (

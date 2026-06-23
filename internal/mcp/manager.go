@@ -61,7 +61,11 @@ func (m *Manager) WithNotify(fn func([]ServerStatus)) {
 }
 
 // Start 并发连接所有已配置的 MCP Server，超时时间为每个 server 30 秒。
-// 所有连接结果（成功或失败）均异步返回，本方法会等待全部连接尝试完成后返回。
+// 所有连接结果（成功或失败）均在方法返回前完成（wg.Wait），结果写入 m.status。
+//
+// 设计原则（fail-soft）：单个 Server 连接失败不影响其他 Server，也不导致整体启动失败。
+// 方法始终返回 nil；连接失败信息通过 Statuses() 的 StatusFailed 状态和 ErrMsg 字段暴露，
+// 供 TUI MCPBar 实时展示。调用者无需检查 error，但保留 error 签名以备未来扩展（如配置校验）。
 func (m *Manager) Start(ctx context.Context) error {
 	if len(m.config.Servers) == 0 {
 		return nil

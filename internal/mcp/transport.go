@@ -141,7 +141,9 @@ func (t *StdioTransport) readLoop() {
 			ch <- resp
 		}
 	}
-	// readLoop 结束：通知所有等待中的请求失败
+	// readLoop 结束：通知所有等待中的请求失败。
+	// ch 均以 make(chan rpcResponse, 1) 创建（容量 1），此处在持锁下发送不会阻塞，
+	// 无死锁风险——Send 端的 select 三路均不需要先获取 t.mu。
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	for id, ch := range t.pending {
